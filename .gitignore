@@ -6,3 +6,4 @@ dist
 .env
 .env.mythex
 .mythex/
+public/icons/
