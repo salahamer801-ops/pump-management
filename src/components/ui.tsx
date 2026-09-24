@@ -91,13 +91,32 @@ export function TextInput(props: InputHTMLAttributes<HTMLInputElement>) {
   return <input {...props} className={cx(inputBase, props.className)} />;
 }
 
-export function NumberInput(props: InputHTMLAttributes<HTMLInputElement>) {
+/**
+ * حقل رقمي:
+ * - الصفر يعني «لا قيمة» فلا يُعرض داخل المربع (يظهر كتلميح باهت) حتى يكتب المستخدم قيمته مباشرة.
+ * - عند الضغط على المربع يُحدَّد ما فيه، فتُستبدل القيمة بالكتابة بدل حذفها يدويًا.
+ */
+export function NumberInput({
+  placeholder,
+  value,
+  onFocus,
+  ...props
+}: InputHTMLAttributes<HTMLInputElement>) {
+  const hasValue = value !== undefined && value !== null && value !== "";
+  const numeric = Number(value);
+  const showEmpty = hasValue && (numeric === 0 || Number.isNaN(numeric));
   return (
     <input
       type="number"
       inputMode="decimal"
       dir="ltr"
+      placeholder={placeholder ?? (hasValue ? "0" : undefined)}
       {...props}
+      value={showEmpty ? "" : value}
+      onFocus={(e) => {
+        e.currentTarget.select();
+        onFocus?.(e);
+      }}
       className={cx(inputBase, "text-left", props.className)}
     />
   );
