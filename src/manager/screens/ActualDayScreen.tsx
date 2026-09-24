@@ -20,7 +20,6 @@ import {
   Plus,
   RefreshCcw,
   ShieldCheck,
-  Sparkles,
   Trash2,
   UserCheck,
   Users,
@@ -62,12 +61,10 @@ import {
   pumpWindow,
   royaltyModeLabel,
   roundDates,
-  roundEndDate,
   roundForDate,
   roundOfDay,
   shareholderOfPerson,
   shortageAmountOf,
-  suggestRoundDays,
   usageTypeLabel,
 } from "../../domain/rules";
 import {
@@ -101,6 +98,7 @@ import {
 } from "../../components/ui";
 import PersonPicker, { roleLabel } from "../../components/PersonPicker";
 import ShareholdersPanel from "../components/ShareholdersPanel";
+import { AddDialaButton } from "../components/AddDialaModal";
 import { DayStatusPill } from "./Dashboard";
 
 const STATUS_FLOW: { id: DayStatus; label: string }[] = [
@@ -223,7 +221,18 @@ export default function ActualDayScreen({
             }
           />
         ) : (
-          <NewDialaCard date={date} onCreated={() => onChangeDay(null)} />
+          <EmptyState
+            icon={<Layers size={26} />}
+            title={`لا توجد ديالة تغطي ${isoToDisplay(date)}`}
+            description="كل يوم فعلي ينتمي إلى ديالة. اضغط «إضافة ديالة» لتحديد عدد أيامها — فتُسمّى أيامها اليوم الأول، الثاني… حتى آخر يوم، ثم يعود الدوران بديالة تالية."
+            action={
+              <AddDialaButton
+                startDate={date}
+                label="إضافة ديالة تبدأ من هذا اليوم"
+                onCreated={() => onChangeDay(null)}
+              />
+            }
+          />
         )}
         <ShareholdersPanel dayId={null} actor={actorName} />
       </div>
@@ -740,8 +749,6 @@ function DaySelector({ date, onChange }: { date: string; onChange: (d: string) =
 
 /* ---------------------- الديالة: أم أيام المساهمة ---------------------- */
 
-const DAY_PRESETS = [3, 5, 7, 10, 15, 30];
-
 /**
  * شريط أيام الديالة: اليوم الأول، الثاني… حتى آخر يوم.
  * لا يوجد يوم فعلي خارج الديالة — الضغط على أي يوم يفتحه أو يُنشئه داخل ديالته.
@@ -871,105 +878,6 @@ function DialaStrip({
           <ShieldCheck size={13} className="inline -mt-0.5" /> حفظ أيام الديالة حتى لا تُحذف بسهولة
         </button>
       ) : null}
-    </Card>
-  );
-}
-
-/** لا توجد ديالة تغطي هذا التاريخ — نبدأ ديالة جديدة بعدد أيام يحدده المسؤول */
-function NewDialaCard({ date, onCreated }: { date: string; onCreated: () => void }) {
-  const { state, actions } = useApp();
-  const pump = state.pump!;
-  const [days, setDays] = useState(() => suggestRoundDays(state));
-  const [notes, setNotes] = useState("");
-
-  const count = Math.floor(Number(days) || 0);
-  const valid = count >= 1 && count <= 400;
-  const endDate = valid ? roundEndDate(date, count) : "";
-  const planned = useMemo(() => (valid ? roundDates(date, count) : []), [date, valid, count]);
-  const takenCount = planned.filter((d) => state.days.some((x) => !x.archived && x.date === d)).length;
-  const freshCount = planned.length - takenCount;
-
-  const create = () => {
-    if (!valid || planned.length === 0) return;
-    const round: DialaRound = {
-      id: uid("rnd"),
-      pumpId: pump.id,
-      number: state.counters.round,
-      startDate: date,
-      days: count,
-      endDate: roundEndDate(date, count),
-      locked: false,
-      lockedAt: "",
-      lockedBy: "",
-      notes: notes.trim(),
-      createdAt: new Date().toISOString(),
-      createdBy: "manager",
-      archived: false,
-    };
-    actions.createRound(round, planned);
-    setNotes("");
-    onCreated();
-  };
-
-  return (
-    <Card className="space-y-3 p-4">
-      <div className="flex items-center gap-2">
-        <Sparkles size={16} className="text-emerald-600" />
-        <h2 className="text-sm font-extrabold text-gray-800 dark:text-white">
-          لا توجد ديالة تغطي {isoToDisplay(date)}
-        </h2>
-      </div>
-      <p className="text-[11px] leading-relaxed text-gray-500 dark:text-slate-300">
-        كل يوم فعلي ينتمي إلى ديالة. حدّد عدد أيام الديالة الجديدة، فتُسمّى أيامها اليوم الأول، الثاني… حتى آخر يوم،
-        وبعدها يعود الدوران بديالة تالية.
-      </p>
-
-      <Field label="عدد أيام الديالة">
-        <NumberInput
-          min={1}
-          max={400}
-          value={days || ""}
-          onChange={(e) => setDays(Number(e.target.value))}
-          aria-label="عدد أيام الديالة الجديدة"
-        />
-      </Field>
-
-      <div className="flex flex-wrap gap-1.5">
-        {DAY_PRESETS.map((n) => (
-          <button
-            key={n}
-            onClick={() => setDays(n)}
-            className={cx(
-              "rounded-full border px-3 py-1 text-[11px] font-bold transition",
-              count === n
-                ? "border-emerald-400 bg-emerald-50 text-emerald-700"
-                : "border-gray-200 text-gray-500 hover:border-emerald-200 dark:border-slate-600 dark:text-slate-300"
-            )}
-          >
-            {n} أيام
-          </button>
-        ))}
-      </div>
-
-      <div className="rounded-2xl bg-emerald-50 px-3 py-2 dark:bg-emerald-900/30">
-        <div className="text-[11px] font-bold text-emerald-600 dark:text-emerald-300">
-          تاريخ نهاية الديالة (محسوب)
-        </div>
-        <div className="text-sm font-black text-emerald-800 dark:text-emerald-200">
-          {endDate ? isoToDisplay(endDate) : "—"}
-        </div>
-        <div className="text-[10px] text-emerald-700 dark:text-emerald-300">
-          {valid ? `الديالة ${state.counters.round}: ${count} يوم — من اليوم الأول إلى اليوم ${dayOrdinal(count)}` : "أدخل عدد أيام صحيح"}
-        </div>
-      </div>
-
-      <Field label="ملاحظات الديالة (اختياري)">
-        <TextInput value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="مثال: الدورة الصيفية" />
-      </Field>
-
-      <Button className="w-full" onClick={create} disabled={!valid || freshCount === 0}>
-        <CalendarPlus size={18} /> بدء الديالة {state.counters.round} من هذا اليوم ({freshCount} يوم)
-      </Button>
     </Card>
   );
 }

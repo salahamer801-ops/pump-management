@@ -2,7 +2,6 @@ import { useMemo, useState } from "react";
 import {
   Archive,
   ArchiveRestore,
-  CalendarPlus,
   Layers,
   ListOrdered,
   Lock,
@@ -27,7 +26,6 @@ import {
   pumpWindow,
   roundDates,
   roundDays,
-  roundEndDate,
   scheduleRows,
   totalUnits,
 } from "../../domain/rules";
@@ -37,34 +35,18 @@ import {
   formatDuration,
   isoToDisplay,
   isoToShort,
-  isoToWeekday,
   todayISO,
   toHours,
   uid,
 } from "../../domain/util";
 import { formatNumber } from "../../format";
-import {
-  Button,
-  Card,
-  EmptyState,
-  Field,
-  Modal,
-  NumberInput,
-  Pill,
-  TextInput,
-  cx,
-} from "../../components/ui";
+import { Button, Card, EmptyState, Field, Modal, Pill, TextInput, cx } from "../../components/ui";
+import { AddDialaButton } from "../components/AddDialaModal";
 import { DayStatusPill } from "./Dashboard";
-
-
-const DAY_PRESETS = [3, 5, 7, 10, 15, 30];
 
 export default function DialaScreen({ onOpenDay }: { onOpenDay: (id: string | null) => void }) {
   const { state, actions } = useApp();
   const pump = state.pump!;
-  const [startDate, setStartDate] = useState(todayISO());
-  const [days, setDays] = useState(7);
-  const [notes, setNotes] = useState("");
   const [showArchived, setShowArchived] = useState(false);
   const [created, setCreated] = useState<{ round: DialaRound; firstDate: string } | null>(null);
 
@@ -75,40 +57,6 @@ export default function DialaScreen({ onOpenDay }: { onOpenDay: (id: string | nu
   const archivedCount = state.rounds.filter((r) => r.archived).length;
   const current = currentDialaDay(state);
   const next = nextDialaDay(state);
-
-  const daysCount = Math.floor(Number(days) || 0);
-  const validDays = daysCount >= 1 && daysCount <= 400;
-  const endDate = startDate && validDays ? roundEndDate(startDate, daysCount) : "";
-  const plannedDates = useMemo(
-    () => (startDate && validDays ? roundDates(startDate, daysCount) : []),
-    [startDate, validDays, daysCount]
-  );
-  const takenDates = plannedDates.filter((d) => state.days.some((x) => !x.archived && x.date === d));
-  const freshCount = plannedDates.length - takenDates.length;
-
-  const createRound = () => {
-    if (!startDate || !validDays || freshCount === 0) return;
-    const round: DialaRound = {
-      id: uid("rnd"),
-      pumpId: pump.id,
-      number: state.counters.round,
-      startDate,
-      days: daysCount,
-      endDate: roundEndDate(startDate, daysCount),
-      locked: false,
-      lockedAt: "",
-      lockedBy: "",
-      notes: notes.trim(),
-      createdAt: new Date().toISOString(),
-      createdBy: "manager",
-      archived: false,
-    };
-    actions.createRound(round, plannedDates);
-    setCreated({ round, firstDate: plannedDates.find((d) => !takenDates.includes(d)) ?? plannedDates[0] });
-    setNotes("");
-    // تجهيز النموذج للديالة التالية: اليوم الذي يلي تاريخ النهاية مباشرة
-    setStartDate(addDaysISO(round.endDate, 1));
-  };
 
   return (
     <div className="space-y-4">
@@ -123,135 +71,57 @@ export default function DialaScreen({ onOpenDay }: { onOpenDay: (id: string | nu
         </div>
       </Card>
 
-      <Card className="space-y-3 p-4">
-        <div className="flex items-center gap-2">
-          <CalendarPlus size={16} className="text-emerald-600" />
-          <h2 className="text-sm font-extrabold text-gray-800 dark:text-white">إضافة ديالة</h2>
-        </div>
-        <p className="text-[11px] leading-relaxed text-gray-400">
-          حدّد يوم بداية الديالة وعدد أيامها (المدة / مرحلة الدوران)، ويُحسب تاريخ نهاية الديالة تلقائيًا.
-        </p>
+      <AddDialaButton
+        className="w-full"
+        onCreated={(round) =>
+          setCreated({
+            round,
+            firstDate:
+              roundDates(round.startDate, round.days).find(
+                (d) => !state.days.some((x) => !x.archived && x.date === d)
+              ) ?? round.startDate,
+          })
+        }
+      />
 
-        <Field label="يوم بداية الديالة">
-          <TextInput
-            type="date"
-            dir="ltr"
-            value={startDate}
-            onChange={(e) => {
-              setStartDate(e.target.value);
-              setCreated(null);
-            }}
-            aria-label="يوم بداية الديالة"
-          />
-        </Field>
-
-        <Field label="عدد أيام الديالة">
-          <NumberInput
-            min={1}
-            max={400}
-            value={days || ""}
-            onChange={(e) => {
-              setDays(Number(e.target.value));
-              setCreated(null);
-            }}
-            aria-label="عدد أيام الديالة"
-          />
-        </Field>
-
-        <div className="flex flex-wrap gap-1.5">
-          {DAY_PRESETS.map((n) => (
+      {created ? (
+        <div className="space-y-2 rounded-2xl border border-emerald-200 bg-emerald-50 px-3 py-3 dark:border-emerald-900/40 dark:bg-emerald-900/20">
+          <div className="flex flex-wrap items-center gap-2">
+            <Sparkles size={16} className="text-emerald-600 dark:text-emerald-300" />
+            <span className="flex-1 text-[11px] font-bold text-emerald-800 dark:text-emerald-200">
+              ديالة {created.round.number}: من {isoToShort(created.round.startDate)} إلى{" "}
+              {isoToShort(created.round.endDate)} — {created.round.days} يوم (اليوم الأول … اليوم{" "}
+              {dayOrdinal(created.round.days)})
+            </span>
             <button
-              key={n}
               onClick={() => {
-                setDays(n);
+                const first = dayByDate(state, created.firstDate);
                 setCreated(null);
+                onOpenDay(first?.id ?? null);
               }}
-              className={cx(
-                "rounded-full border px-3 py-1 text-[11px] font-bold transition",
-                daysCount === n
-                  ? "border-emerald-400 bg-emerald-50 text-emerald-700"
-                  : "border-gray-200 text-gray-500 hover:border-emerald-200 dark:border-slate-600 dark:text-slate-300"
-              )}
+              className="rounded-xl bg-white px-3 py-1.5 text-[11px] font-bold text-emerald-700 dark:bg-slate-800 dark:text-emerald-300"
             >
-              {n} أيام
+              ابدأ من اليوم الأول
             </button>
-          ))}
-        </div>
-
-        <div className="rounded-2xl bg-emerald-50 px-3 py-3 dark:bg-emerald-900/30">
-          <div className="text-[11px] font-bold text-emerald-600 dark:text-emerald-300">
-            تاريخ نهاية الديالة (محسوب)
           </div>
-          <div className="mt-0.5 text-base font-black text-emerald-800 dark:text-emerald-200">
-            {endDate ? isoToDisplay(endDate) : "—"}
-          </div>
-          <div className="text-[10px] text-emerald-700 dark:text-emerald-300">
-            {endDate ? `${isoToWeekday(endDate)} · ${daysCount} يوم` : "أدخل يوم البداية وعدد الأيام"}
-          </div>
-        </div>
-
-        <Field label="ملاحظات الديالة (اختياري)" hint="مثال: المدة الأولى، أو مرحلة دوران معيّنة">
-          <TextInput value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="اختياري" />
-        </Field>
-
-        {!validDays ? (
-          <p className="rounded-2xl bg-red-50 px-3 py-2 text-[11px] font-bold text-red-600 dark:bg-red-900/20 dark:text-red-300">
-            أدخل عدد أيام صحيح (من 1 إلى 400).
-          </p>
-        ) : freshCount === 0 ? (
-          <p className="rounded-2xl bg-amber-50 px-3 py-2 text-[11px] font-bold text-amber-700 dark:bg-amber-900/20 dark:text-amber-300">
-            كل أيام هذه المدة مسجّلة بالفعل — اختر يوم بداية مختلفًا أو غيّر عدد الأيام.
-          </p>
-        ) : (
-          <p className="rounded-2xl bg-gray-50 px-3 py-2 text-[11px] leading-relaxed text-gray-500 dark:bg-slate-700 dark:text-slate-300">
-            سيُنشأ {freshCount} يوم جاهز من الجدول الأساسي
-            {takenDates.length > 0 ? ` · ${takenDates.length} يوم مسجّل مسبقًا سيُترك كما هو` : ""}
-          </p>
-        )}
-
-        <Button className="w-full" onClick={createRound} disabled={!validDays || freshCount === 0}>
-          <CalendarPlus size={18} /> إضافة الديالة ({validDays ? freshCount : 0} يوم)
-        </Button>
-
-        {created ? (
-          <div className="space-y-2 rounded-2xl border border-emerald-200 bg-emerald-50 px-3 py-3 dark:border-emerald-900/40 dark:bg-emerald-900/20">
-            <div className="flex flex-wrap items-center gap-2">
-              <Sparkles size={16} className="text-emerald-600 dark:text-emerald-300" />
-              <span className="flex-1 text-[11px] font-bold text-emerald-800 dark:text-emerald-200">
-                ديالة {created.round.number}: من {isoToShort(created.round.startDate)} إلى{" "}
-                {isoToShort(created.round.endDate)} — {created.round.days} يوم (اليوم الأول … اليوم{" "}
-                {dayOrdinal(created.round.days)})
-              </span>
+          {(() => {
+            const live = state.rounds.find((r) => r.id === created.round.id);
+            if (!live) return null;
+            return live.locked ? (
+              <p className="rounded-xl bg-white/70 px-3 py-2 text-[11px] font-bold text-emerald-700 dark:bg-slate-800 dark:text-emerald-300">
+                <Lock size={11} className="inline -mt-0.5" /> أيام هذه الديالة محفوظة — لا تُحذف بسهولة.
+              </p>
+            ) : (
               <button
-                onClick={() => {
-                  const first = dayByDate(state, created.firstDate);
-                  setCreated(null);
-                  onOpenDay(first?.id ?? null);
-                }}
-                className="rounded-xl bg-white px-3 py-1.5 text-[11px] font-bold text-emerald-700 dark:bg-slate-800 dark:text-emerald-300"
+                onClick={() => actions.lockRound(created.round.id, "manager")}
+                className="w-full rounded-xl bg-emerald-600 px-3 py-2 text-[11px] font-bold text-white"
               >
-                ابدأ من اليوم الأول
+                <ShieldCheck size={13} className="inline -mt-0.5" /> حفظ الديالة الآن حتى لا تُحذف أيامها بسهولة
               </button>
-            </div>
-            {(() => {
-              const live = state.rounds.find((r) => r.id === created.round.id);
-              if (!live) return null;
-              return live.locked ? (
-                <p className="rounded-xl bg-white/70 px-3 py-2 text-[11px] font-bold text-emerald-700 dark:bg-slate-800 dark:text-emerald-300">
-                  <Lock size={11} className="inline -mt-0.5" /> أيام هذه الديالة محفوظة — لا تُحذف بسهولة.
-                </p>
-              ) : (
-                <button
-                  onClick={() => actions.lockRound(created.round.id, "manager")}
-                  className="w-full rounded-xl bg-emerald-600 px-3 py-2 text-[11px] font-bold text-white"
-                >
-                  <ShieldCheck size={13} className="inline -mt-0.5" /> حفظ الديالة الآن حتى لا تُحذف أيامها بسهولة
-                </button>
-              );
-            })()}
-          </div>
-        ) : null}
-      </Card>
+            );
+          })()}
+        </div>
+      ) : null}
 
       <Card className="p-4">
         <div className="mb-3 flex items-center gap-2">
