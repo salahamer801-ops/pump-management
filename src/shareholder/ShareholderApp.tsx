@@ -4,7 +4,6 @@ import {
   Droplets,
   Home,
   Layers,
-  LogOut,
   Settings,
   ShieldCheck,
   Wallet,
@@ -78,13 +77,6 @@ function Shell({
               </div>
             </div>
           </div>
-          <button
-            onClick={onLogout}
-            className="flex items-center gap-1.5 rounded-xl px-3 py-2 text-xs font-bold text-gray-500 hover:bg-gray-100 dark:text-slate-400 dark:hover:bg-slate-800"
-            aria-label={t("تسجيل الخروج", "Log out")}
-          >
-            <LogOut size={16} /> {t("خروج", "Logout")}
-          </button>
         </div>
       </header>
 
@@ -97,7 +89,7 @@ function Shell({
         {tab === "turns" && <TurnsScreen />}
         {tab === "official" && <OfficialScreen />}
         {tab === "accounts" && <AccountsScreen />}
-        {tab === "settings" && <SettingsScreen />}
+        {tab === "settings" && <SettingsScreen onLogout={onLogout} />}
       </main>
 
       <nav className="fixed inset-x-0 bottom-0 z-30 border-t border-gray-100 bg-white/95 backdrop-blur dark:border-slate-700 dark:bg-slate-900/95">

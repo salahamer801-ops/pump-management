@@ -4,6 +4,7 @@ import {
   FileText,
   Globe,
   Info,
+  LogOut,
   Moon,
   Palette,
   Save,
@@ -23,7 +24,7 @@ import {
   TextInput,
 } from "../../components/ui";
 
-export default function SettingsScreen() {
+export default function SettingsScreen({ onLogout }: { onLogout: () => void }) {
   const { state, actions } = useShareholder();
   const lang = state.settings.language;
   const t = (ar: string, en: string) => tr(lang, ar, en);
@@ -195,6 +196,19 @@ export default function SettingsScreen() {
             </p>
           </div>
         </div>
+      </Card>
+
+      {/* الخروج */}
+      <Card className="p-5">
+        <Button variant="danger" className="w-full" onClick={onLogout}>
+          <LogOut size={18} /> {t("تسجيل الخروج", "Log out")}
+        </Button>
+        <p className="mt-3 text-center text-xs text-gray-400 dark:text-slate-400">
+          {t(
+            "بياناتك تبقى محفوظة على جهازك بعد الخروج.",
+            "Your data stays saved on your device after logging out."
+          )}
+        </p>
       </Card>
     </div>
   );

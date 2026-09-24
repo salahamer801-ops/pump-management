@@ -9,7 +9,6 @@ import {
   Info,
   LayoutDashboard,
   Layers,
-  LogOut,
   Receipt,
   Settings2,
   Users,
@@ -110,13 +109,6 @@ export default function ManagerApp({
                   {unread}
                 </span>
               ) : null}
-            </button>
-            <button
-              onClick={onLogout}
-              className="flex items-center gap-1 rounded-xl px-2 py-2 text-xs font-bold text-gray-500 hover:bg-gray-100 dark:text-slate-300 dark:hover:bg-slate-800"
-              aria-label="تسجيل الخروج"
-            >
-              <LogOut size={16} /> خروج
             </button>
           </div>
         </div>
