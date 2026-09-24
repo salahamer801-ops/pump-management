@@ -9,42 +9,55 @@ import {
   ChevronRight,
   ClipboardList,
   Droplets,
+  Fuel,
+  HandCoins,
   Lock,
   LockOpen,
   Pencil,
+  Phone,
   PlayCircle,
   Plus,
   RefreshCcw,
   ShieldCheck,
-  Timer,
   Trash2,
   UserCheck,
+  Users,
   Wrench,
 } from "lucide-react";
 import { useApp } from "../../store";
 import type {
   ConflictKind,
+  Currency,
   DayEntry,
   DayStatus,
+  DieselSettlement,
   EntryRole,
+  Person,
+  RoyaltyPayMode,
   Stoppage,
   StoppageKind,
   UsageType,
 } from "../../domain/types";
 import {
+  DIESEL_SETTLEMENT_OPTIONS,
+  ROYALTY_MODE_OPTIONS,
   computeUsageDraft,
   currentRight,
   dayByDate,
   dayEntries,
   dayIssues,
+  daySettlementTotals,
   dialaDayLabel,
   daySummary,
+  dieselSettlementLabel,
   entryMinutes,
   findPerson,
   openIssues,
   personName,
   pumpWindow,
+  royaltyModeLabel,
   shareholderOfPerson,
+  shortageAmountOf,
   usageTypeLabel,
 } from "../../domain/rules";
 import {
@@ -67,6 +80,7 @@ import {
   EmptyState,
   Field,
   Modal,
+  NumberInput,
   Pill,
   Select,
   TextArea,
@@ -75,6 +89,7 @@ import {
   cx,
 } from "../../components/ui";
 import PersonPicker, { roleLabel } from "../../components/PersonPicker";
+import ShareholdersPanel from "../components/ShareholdersPanel";
 import { DayStatusPill } from "./Dashboard";
 
 const STATUS_FLOW: { id: DayStatus; label: string }[] = [
@@ -105,6 +120,8 @@ export default function ActualDayScreen({
   const [ackIssue, setAckIssue] = useState<{ key: string; kind: ConflictKind; message: string } | null>(null);
   const [reopenOpen, setReopenOpen] = useState(false);
   const [actorName, setActorName] = useState("المسؤول");
+  const [shortageFor, setShortageFor] = useState<string | null>(null);
+  const [editPerson, setEditPerson] = useState<Person | null>(null);
 
   useEffect(() => {
     if (!dayId) return;
@@ -120,6 +137,16 @@ export default function ActualDayScreen({
   const issues = day ? openIssues(state, day, pump) : [];
   const allIssues = day ? dayIssues(state, day, pump) : [];
   const stoppages = state.stoppages.filter((s) => (day ? s.dayId === day.id : false) && !s.archived);
+  const settle = day ? daySettlementTotals(state, day.id) : null;
+
+  // استخدامات مُسجَّلة بلا صف في الترتيب (حفاظًا على عدم وجود سجلات يتيمة)
+  const orphanUsages = useMemo(() => {
+    if (!day) return [];
+    const linked = new Set(entries.map((e) => e.usageId).filter(Boolean) as string[]);
+    return state.usages.filter(
+      (u) => u.dayId === day.id && u.status === "active" && !linked.has(u.id)
+    );
+  }, [state.usages, entries, day]);
 
   const changeDate = (next: string) => {
     setDate(next);
@@ -172,6 +199,7 @@ export default function ActualDayScreen({
             </Button>
           }
         />
+        <ShareholdersPanel dayId={null} actor={actorName} />
       </div>
     );
   }
@@ -265,6 +293,9 @@ export default function ActualDayScreen({
         ) : null}
       </Card>
 
+      {/* 1) المساهمون الأساسيون — سجل مرجعي ثابت لا يتغيّر بتغيّر اليوم */}
+      <ShareholdersPanel dayId={day.id} actor={actorName} />
+
       {issues.length > 0 ? (
         <Card className="space-y-2 p-4">
           <div className="flex items-center gap-2">
@@ -302,21 +333,24 @@ export default function ActualDayScreen({
         </Card>
       ) : null}
 
+      {/* 2) المستخدمون الفعليون: الاسم والرقم والساعات والديزل والرواسة */}
       <Card className="p-4">
         <div className="mb-3 flex items-center gap-2">
-          <Timer size={16} className="text-emerald-600" />
-          <h2 className="text-sm font-extrabold text-gray-800 dark:text-white">ترتيب اليوم الفعلي</h2>
+          <Users size={16} className="text-emerald-600" />
+          <h2 className="text-sm font-extrabold text-gray-800 dark:text-white">المستخدمون الفعليون</h2>
           <span className="mr-auto text-[11px] text-gray-400">
-            {formatDuration(summary?.plannedMin ?? 0)} من {toHours(window.capacityMin)} ساعة
+            {entries.length} مستخدم · {formatDuration(summary?.plannedMin ?? 0)} من {toHours(window.capacityMin)} ساعة
           </span>
         </div>
 
+        {settle ? <SettlementSummary totals={settle} currency={pump.currency} /> : null}
+
         {entries.length === 0 ? (
           <p className="py-4 text-center text-xs text-gray-400">
-            لا يوجد أشخاص في هذا اليوم بعد — أضف شخصًا أو استرجع الجدول الأساسي.
+            لا يوجد مستخدمون في هذا اليوم بعد — أضف شخصًا أو استرجع الجدول الأساسي.
           </p>
         ) : (
-          <div className="space-y-2">
+          <div className="mt-3 space-y-2">
             {entries.map((entry, index) => (
               <EntryRow
                 key={entry.id}
@@ -326,14 +360,52 @@ export default function ActualDayScreen({
                 isLast={index === entries.length - 1}
                 onEdit={() => setEditEntry(entry)}
                 onUsage={() => setUsageEntry(entry)}
+                onEditPerson={() => {
+                  const p = findPerson(state, entry.personId);
+                  if (p) setEditPerson(p);
+                }}
+                onShortage={(usageId) => setShortageFor(usageId)}
+                actor={actorName}
               />
             ))}
           </div>
         )}
 
+        {orphanUsages.length > 0 ? (
+          <div className="mt-3 space-y-2 rounded-2xl border border-amber-200 bg-amber-50/60 p-3 dark:border-amber-900/40 dark:bg-amber-900/20">
+            <div className="text-[11px] font-extrabold text-amber-800 dark:text-amber-300">
+              استخدامات مسجّلة بدون صف في ترتيب اليوم ({orphanUsages.length}) — السجل محفوظ ولا يُحذف
+            </div>
+            {orphanUsages.map((u) => (
+              <div key={u.id} className="rounded-xl bg-white px-3 py-2 text-[11px] dark:bg-slate-800">
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="font-extrabold text-gray-800 dark:text-white">
+                    {personName(state, u.personId)}
+                  </span>
+                  <Pill tone="gray">{u.startTime} → {u.endTime}</Pill>
+                  <Pill tone="blue">{formatDuration(u.minutes)}</Pill>
+                  <Pill tone={u.dieselSettlement === "paid" ? "green" : u.dieselSettlement === "shortage" ? "amber" : "red"}>
+                    ديزل: {dieselSettlementLabel(u.dieselSettlement)}
+                  </Pill>
+                  <Pill tone={u.royaltyPayMode === "cash" ? "green" : "amber"}>
+                    رواسة: {royaltyModeLabel(u.royaltyPayMode)}
+                  </Pill>
+                </div>
+                <div className="mt-1.5 flex flex-wrap gap-2">
+                  <SettlementChips
+                    usage={u}
+                    actor={actorName}
+                    onShortage={() => setShortageFor(u.id)}
+                  />
+                </div>
+              </div>
+            ))}
+          </div>
+        ) : null}
+
         <div className="mt-3 flex flex-wrap gap-2">
           <Button className="flex-1" onClick={() => setPickerOpen(true)}>
-            <Plus size={18} /> إضافة شخص
+            <Plus size={18} /> إضافة مستخدم
           </Button>
           <Button
             variant="outline"
@@ -343,8 +415,9 @@ export default function ActualDayScreen({
             <RefreshCcw size={16} /> استرجاع الجدول الأساسي
           </Button>
         </div>
-        <p className="mt-2 text-[10px] text-gray-400">
-          ترتيب اليوم الفعلي لا يغيّر الجدول الأساسي. كل تعديل يُحفظ فورًا مع تسجيله في سجل التدقيق.
+        <p className="mt-2 text-[10px] leading-relaxed text-gray-400">
+          ترتيب اليوم الفعلي لا يغيّر الجدول الأساسي ولا المساهمين الأساسيين. كل خيار تسديد (مسدد / نقص / غير مسدد ·
+          نقد / أجل) يُسجَّل كحركة مالية مستقلة في سجل التدقيق.
         </p>
       </Card>
 
@@ -394,7 +467,7 @@ export default function ActualDayScreen({
         open={pickerOpen}
         onClose={() => setPickerOpen(false)}
         pumpId={pump.id}
-        title="إضافة شخص إلى اليوم الفعلي"
+        title="إضافة مستخدم إلى اليوم الفعلي"
         onSelect={(person, role) => {
           const last = entries[entries.length - 1];
           const startMin = last ? timeToMinutes(last.endTime) : timeToMinutes(day.workStart);
@@ -437,6 +510,18 @@ export default function ActualDayScreen({
           onClose={() => setUsageEntry(null)}
           actor={actorName}
         />
+      ) : null}
+
+      {shortageFor ? (
+        <ShortageModal
+          usageId={shortageFor}
+          actor={actorName}
+          onClose={() => setShortageFor(null)}
+        />
+      ) : null}
+
+      {editPerson ? (
+        <PersonQuickModal person={editPerson} onClose={() => setEditPerson(null)} />
       ) : null}
 
       {stoppageOpen ? (
@@ -483,6 +568,8 @@ export default function ActualDayScreen({
   );
 }
 
+/* ------------------------------ عناصر صغيرة ----------------------------- */
+
 function MiniStat({
   label,
   value,
@@ -506,6 +593,84 @@ function MiniStat({
       >
         {value}
       </div>
+    </div>
+  );
+}
+
+function SettlementSummary({
+  totals,
+  currency,
+}: {
+  totals: ReturnType<typeof daySettlementTotals>;
+  currency: Currency;
+}) {
+  return (
+    <div className="grid grid-cols-2 gap-2" data-testid="day-settlement-summary">
+      <div className="rounded-2xl bg-gray-50 p-3 dark:bg-slate-700">
+        <div className="flex items-center gap-1.5 text-[11px] font-extrabold text-gray-700 dark:text-slate-200">
+          <Fuel size={13} className="text-emerald-600" /> الديزل
+        </div>
+        <div className="mt-1.5 space-y-0.5 text-[11px]">
+          <Row label="الاستحقاق" value={formatMoney(totals.dieselDue, currency)} />
+          <Row label="مُسدَّد" value={formatMoney(totals.dieselPaid, currency)} tone="green" />
+          <Row
+            label={`نقص${totals.shortageLiters > 0 ? ` (${formatNumber(totals.shortageLiters)} لتر)` : ""}`}
+            value={`${formatMoney(totals.shortageAmount, currency)} · ${totals.shortageCount}`}
+            tone={totals.shortageAmount > 0 ? "amber" : "gray"}
+          />
+          <Row
+            label={`غير مسدد · ${totals.unpaidCount}`}
+            value={formatMoney(Math.max(0, totals.dieselOwed - totals.shortageAmount), currency)}
+            tone={totals.unpaidCount > 0 ? "red" : "gray"}
+          />
+        </div>
+      </div>
+      <div className="rounded-2xl bg-gray-50 p-3 dark:bg-slate-700">
+        <div className="flex items-center gap-1.5 text-[11px] font-extrabold text-gray-700 dark:text-slate-200">
+          <HandCoins size={13} className="text-emerald-600" /> رسوم الرواسة
+        </div>
+        <div className="mt-1.5 space-y-0.5 text-[11px]">
+          <Row label="المستحق" value={formatMoney(totals.royaltyDue, currency)} />
+          <Row
+            label={`نقد · ${totals.cashCount}`}
+            value={formatMoney(totals.royaltyCash, currency)}
+            tone="green"
+          />
+          <Row
+            label={`أجل · ${totals.creditCount}`}
+            value={formatMoney(totals.royaltyCredit, currency)}
+            tone={totals.creditCount > 0 ? "amber" : "gray"}
+          />
+          <Row label="المستخدمون" value={`${totals.users}`} />
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function Row({
+  label,
+  value,
+  tone = "gray",
+}: {
+  label: string;
+  value: string;
+  tone?: "green" | "amber" | "red" | "gray";
+}) {
+  return (
+    <div className="flex items-center justify-between gap-2">
+      <span className="text-gray-400">{label}</span>
+      <span
+        className={cx(
+          "font-extrabold",
+          tone === "green" && "text-emerald-700 dark:text-emerald-300",
+          tone === "amber" && "text-amber-600 dark:text-amber-400",
+          tone === "red" && "text-red-600 dark:text-red-400",
+          tone === "gray" && "text-gray-700 dark:text-slate-200"
+        )}
+      >
+        {value}
+      </span>
     </div>
   );
 }
@@ -546,6 +711,111 @@ function DaySelector({ date, onChange }: { date: string; onChange: (d: string) =
   );
 }
 
+/* ----------------------- صف المستخدم + خيارات التسديد ------------------- */
+
+function SettlementChips({
+  usage,
+  actor,
+  onShortage,
+  disabled,
+  onNeedUsage,
+}: {
+  usage: {
+    id: string;
+    dieselSettlement: DieselSettlement;
+    dieselShortageLiters: number;
+    royaltyPayMode: RoyaltyPayMode;
+  };
+  actor: string;
+  onShortage: () => void;
+  disabled?: boolean;
+  onNeedUsage?: () => void;
+}) {
+  const { actions } = useApp();
+  const apply = (patch: { dieselSettlement?: DieselSettlement; royaltyPayMode?: RoyaltyPayMode }) => {
+    actions.setUsageSettlement(usage.id, {
+      dieselSettlement: patch.dieselSettlement ?? usage.dieselSettlement,
+      dieselShortageLiters:
+        patch.dieselSettlement && patch.dieselSettlement !== "shortage" ? 0 : usage.dieselShortageLiters,
+      royaltyPayMode: patch.royaltyPayMode ?? usage.royaltyPayMode,
+      settlementNote: "",
+      reason: "تعديل من شاشة اليوم الفعلي",
+      actor,
+    });
+  };
+
+  return (
+    <>
+      <div className="flex flex-wrap items-center gap-1">
+        <span className="text-[10px] font-bold text-gray-400">
+          <Fuel size={11} className="inline -mt-0.5" /> الديزل
+        </span>
+        {DIESEL_SETTLEMENT_OPTIONS.map((o) => (
+          <button
+            key={o.id}
+            title={o.action}
+            disabled={disabled}
+            onClick={() => {
+              if (disabled) {
+                onNeedUsage?.();
+                return;
+              }
+              if (o.id === "shortage") onShortage();
+              else apply({ dieselSettlement: o.id });
+            }}
+            className={cx(
+              "rounded-xl border px-2 py-1 text-[10px] font-bold transition",
+              usage.dieselSettlement === o.id
+                ? o.id === "paid"
+                  ? "border-emerald-400 bg-emerald-50 text-emerald-700"
+                  : o.id === "shortage"
+                    ? "border-amber-400 bg-amber-50 text-amber-700"
+                    : "border-red-300 bg-red-50 text-red-600"
+                : "border-gray-200 text-gray-500 hover:border-emerald-200 dark:border-slate-600 dark:text-slate-300"
+            )}
+            aria-label={`حالة الديزل: ${o.label}`}
+          >
+            {o.label}
+            {o.id === "shortage" && usage.dieselSettlement === "shortage" && usage.dieselShortageLiters > 0
+              ? ` (${formatNumber(usage.dieselShortageLiters)} ل)`
+              : ""}
+          </button>
+        ))}
+      </div>
+      <div className="flex flex-wrap items-center gap-1">
+        <span className="text-[10px] font-bold text-gray-400">
+          <HandCoins size={11} className="inline -mt-0.5" /> الرواسة
+        </span>
+        {ROYALTY_MODE_OPTIONS.map((o) => (
+          <button
+            key={o.id}
+            title={o.action}
+            disabled={disabled}
+            onClick={() => {
+              if (disabled) {
+                onNeedUsage?.();
+                return;
+              }
+              apply({ royaltyPayMode: o.id });
+            }}
+            className={cx(
+              "rounded-xl border px-2 py-1 text-[10px] font-bold transition",
+              usage.royaltyPayMode === o.id
+                ? o.id === "cash"
+                  ? "border-emerald-400 bg-emerald-50 text-emerald-700"
+                  : "border-amber-400 bg-amber-50 text-amber-700"
+                : "border-gray-200 text-gray-500 hover:border-emerald-200 dark:border-slate-600 dark:text-slate-300"
+            )}
+            aria-label={`سداد الرواسة: ${o.label}`}
+          >
+            {o.label}
+          </button>
+        ))}
+      </div>
+    </>
+  );
+}
+
 function EntryRow({
   index,
   entry,
@@ -553,6 +823,9 @@ function EntryRow({
   isLast,
   onEdit,
   onUsage,
+  onEditPerson,
+  onShortage,
+  actor,
 }: {
   index: number;
   entry: DayEntry;
@@ -560,6 +833,9 @@ function EntryRow({
   isLast: boolean;
   onEdit: () => void;
   onUsage: () => void;
+  onEditPerson: () => void;
+  onShortage: (usageId: string) => void;
+  actor: string;
 }) {
   const { state, actions } = useApp();
   const pump = state.pump!;
@@ -567,10 +843,21 @@ function EntryRow({
   const actual = entry.actualPersonId ? findPerson(state, entry.actualPersonId) : null;
   const minutes = entryMinutes(entry);
   const overnight = entry.startTime && entry.endTime && isOvernight(entry.startTime, entry.endTime);
-  const usage = entry.usageId ? state.usages.find((u) => u.id === entry.usageId) : null;
+  const usage = entry.usageId ? state.usages.find((u) => u.id === entry.usageId) ?? null : null;
+  const activeShift = usage && usage.status === "active" ? usage : null;
+
+  const usageBalance = useMemo(() => {
+    if (!activeShift) return 0;
+    return state.transactions
+      .filter((t) => t.usageId === activeShift.id && t.status === "posted")
+      .reduce((s, t) => s + (t.direction === "debit" ? t.amount : -t.amount), 0);
+  }, [state.transactions, activeShift]);
 
   return (
-    <div className="rounded-2xl border border-gray-100 p-3 dark:border-slate-700">
+    <div
+      className="rounded-2xl border border-gray-100 p-3 dark:border-slate-700"
+      data-testid={`day-user-${entry.id}`}
+    >
       <div className="flex items-center gap-3">
         <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-emerald-50 text-xs font-black text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300">
           {index + 1}
@@ -587,11 +874,23 @@ function EntryRow({
               <Pill tone="blue">
                 <CheckCircle2 size={11} /> {usageTypeLabel(usage.usageType)}
               </Pill>
-            ) : null}
+            ) : (
+              <Pill tone="gray">لم يُسجَّل استخدام بعد</Pill>
+            )}
           </div>
-          <div className="mt-0.5 text-[11px] text-gray-400">
-            {entry.startTime} → {entry.endTime} · {formatDuration(minutes)}
-            {overnight ? " · يعبر منتصف الليل" : ""}
+          <div className="mt-0.5 flex flex-wrap items-center gap-x-2 text-[11px] text-gray-400">
+            <button
+              onClick={onEditPerson}
+              className="flex items-center gap-1 rounded-lg bg-gray-50 px-1.5 py-0.5 font-bold text-gray-500 dark:bg-slate-700 dark:text-slate-300"
+              aria-label={`تعديل اسم ورقم ${person?.name ?? ""}`}
+            >
+              <Phone size={11} /> {person?.phone || "إضافة رقم"}
+              <Pencil size={10} />
+            </button>
+            <span>
+              {entry.startTime} → {entry.endTime} · {formatDuration(minutes)}
+              {overnight ? " · يعبر منتصف الليل" : ""}
+            </span>
           </div>
           {actual && actual.id !== entry.personId ? (
             <div className="mt-0.5 flex items-center gap-1 text-[11px] font-bold text-amber-600">
@@ -605,7 +904,7 @@ function EntryRow({
               onClick={() => actions.moveEntry(entry.id, -1)}
               disabled={isFirst}
               className="rounded-lg bg-gray-100 p-1.5 text-gray-600 disabled:opacity-30 dark:bg-slate-700 dark:text-slate-200"
-              aria-label="تقديم الشخص"
+              aria-label="تقديم المستخدم"
             >
               <ArrowUp size={13} />
             </button>
@@ -613,13 +912,60 @@ function EntryRow({
               onClick={() => actions.moveEntry(entry.id, 1)}
               disabled={isLast}
               className="rounded-lg bg-gray-100 p-1.5 text-gray-600 disabled:opacity-30 dark:bg-slate-700 dark:text-slate-200"
-              aria-label="تأخير الشخص"
+              aria-label="تأخير المستخدم"
             >
               <ArrowDown size={13} />
             </button>
           </div>
         </div>
       </div>
+
+      <div className="mt-2 flex flex-wrap items-start gap-x-3 gap-y-1.5 rounded-2xl bg-gray-50 px-2.5 py-2 dark:bg-slate-700/50">
+        {activeShift ? (
+          <SettlementChips
+            usage={activeShift}
+            actor={actor}
+            onShortage={() => onShortage(activeShift.id)}
+          />
+        ) : (
+          <button
+            onClick={onUsage}
+            className="text-[10px] font-bold text-emerald-700 dark:text-emerald-300"
+          >
+            سجّل الاستخدام أولًا لتحديد تسديد الديزل والرواسة (مسدد / نقص / غير مسدد · نقد / أجل)
+          </button>
+        )}
+        {activeShift ? (
+          <span
+            className={cx(
+              "rounded-xl px-2 py-1 text-[10px] font-bold",
+              usageBalance > 0
+                ? "bg-red-50 text-red-600 dark:bg-red-900/30 dark:text-red-300"
+                : "bg-emerald-50 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300"
+            )}
+          >
+            {usageBalance > 0
+              ? `يبقى عليه: ${formatMoney(usageBalance, pump.currency)}`
+              : "مسدَّد بالكامل"}
+          </span>
+        ) : null}
+      </div>
+
+      {activeShift ? (
+        <div className="mt-1.5 flex flex-wrap gap-x-2 gap-y-1 text-[10px] text-gray-400">
+          <span>
+            ديزل: {activeShift.fuelLiters} لتر × {activeShift.fuelPriceSnapshot} ={" "}
+            {formatMoney(activeShift.fuelAmountDue, pump.currency)}
+          </span>
+          {activeShift.dieselSettlement === "shortage" ? (
+            <span className="font-bold text-amber-600">
+              نقص {formatNumber(activeShift.dieselShortageLiters)} لتر ={" "}
+              {formatMoney(shortageAmountOf(activeShift), pump.currency)}
+            </span>
+          ) : null}
+          <span>رواسة: {formatMoney(activeShift.royaltyAmountDue, pump.currency)}</span>
+        </div>
+      ) : null}
 
       <div className="mt-2 flex flex-wrap gap-1.5">
         <button
@@ -645,14 +991,115 @@ function EntryRow({
             حامل الحق مختلف عن المستخدم
           </span>
         ) : null}
-        {usage ? (
-          <span className="rounded-xl bg-sky-50 px-3 py-1.5 text-[11px] font-bold text-sky-700 dark:bg-sky-900/30 dark:text-sky-300">
-            {usage.fuelLiters} لتر · {formatMoney(usage.fuelAmountDue, pump.currency)} ديزل ·{" "}
-            {formatMoney(usage.royaltyAmountDue, pump.currency)} رواسة
-          </span>
-        ) : null}
       </div>
     </div>
+  );
+}
+
+/* ------------------------- نوافذ التعديل والتسديد ---------------------- */
+
+function ShortageModal({
+  usageId,
+  actor,
+  onClose,
+}: {
+  usageId: string;
+  actor: string;
+  onClose: () => void;
+}) {
+  const { state, actions } = useApp();
+  const pump = state.pump!;
+  const usage = state.usages.find((u) => u.id === usageId);
+  const [liters, setLiters] = useState(
+    usage?.dieselShortageLiters || Math.max(0, Math.round((usage?.fuelLiters ?? 0) * 0.1 * 100) / 100)
+  );
+  const [reason, setReason] = useState("");
+
+  if (!usage) return null;
+  const amount = Math.round(liters * (usage.fuelPriceSnapshot || 0));
+  const paidPart = Math.max(0, Math.round(usage.fuelAmountDue) - Math.min(amount, Math.round(usage.fuelAmountDue)));
+
+  return (
+    <Modal open onClose={onClose} title="تسجيل نقص الديزل">
+      <div className="space-y-3">
+        <p className="rounded-2xl bg-amber-50 px-3 py-2 text-[11px] leading-relaxed text-amber-800 dark:bg-amber-900/20 dark:text-amber-300">
+          {personName(state, usage.personId)} — الاستهلاك المحسوب {usage.fuelLiters} لتر بقيمة{" "}
+          {formatMoney(usage.fuelAmountDue, pump.currency)}. عند اختيار «نقص» يُسجَّل النقص فقط دينًا عليه، ويُسجَّل
+          الباقي كسداد.
+        </p>
+        <Field label="عدد لترات النقص">
+          <NumberInput value={liters} onChange={(e) => setLiters(Number(e.target.value))} />
+        </Field>
+        <div className="grid grid-cols-2 gap-2 rounded-2xl bg-gray-50 p-3 text-[11px] dark:bg-slate-700">
+          <Row label="قيمة النقص (دين)" value={formatMoney(Math.min(amount, usage.fuelAmountDue), pump.currency)} tone="amber" />
+          <Row label="المسدد من الديزل" value={formatMoney(paidPart, pump.currency)} tone="green" />
+          <Row label="سعر اللتر وقت العملية" value={`${usage.fuelPriceSnapshot}`} />
+          <Row label="لتر/ساعة وقت العملية" value={`${usage.fuelPerHourSnapshot}`} />
+        </div>
+        <Field label="سبب / ملاحظة النقص">
+          <TextInput
+            value={reason}
+            onChange={(e) => setReason(e.target.value)}
+            placeholder="مثال: لم يكفِ الديزل لتغطية الساعات"
+          />
+        </Field>
+        <Button
+          className="w-full"
+          onClick={() => {
+            actions.setUsageSettlement(usage.id, {
+              dieselSettlement: "shortage",
+              dieselShortageLiters: liters,
+              royaltyPayMode: usage.royaltyPayMode,
+              settlementNote: reason,
+              reason: reason || "تسجيل نقص الديزل",
+              actor,
+            });
+            onClose();
+          }}
+        >
+          <Fuel size={16} /> حفظ حالة النقص
+        </Button>
+      </div>
+    </Modal>
+  );
+}
+
+function PersonQuickModal({ person, onClose }: { person: Person; onClose: () => void }) {
+  const { actions } = useApp();
+  const [name, setName] = useState(person.name);
+  const [phone, setPhone] = useState(person.phone);
+  const [notes, setNotes] = useState(person.notes);
+
+  return (
+    <Modal open onClose={onClose} title="اسم المستخدم ورقمه">
+      <div className="space-y-3">
+        <Field label="الاسم">
+          <TextInput value={name} onChange={(e) => setName(e.target.value)} autoFocus />
+        </Field>
+        <Field label="رقم الهاتف">
+          <TextInput
+            value={phone}
+            onChange={(e) => setPhone(e.target.value)}
+            dir="ltr"
+            className="text-left"
+            placeholder="7XXXXXXXX"
+          />
+        </Field>
+        <Field label="ملاحظات">
+          <TextArea value={notes} onChange={(e) => setNotes(e.target.value)} rows={2} />
+        </Field>
+        <Button
+          className="w-full"
+          disabled={!name.trim()}
+          onClick={() => {
+            actions.savePerson({ ...person, name: name.trim(), phone: phone.trim(), notes: notes.trim() }, false);
+            onClose();
+          }}
+        >
+          <ShieldCheck size={16} /> حفظ
+        </Button>
+      </div>
+    </Modal>
   );
 }
 
@@ -825,7 +1272,11 @@ function UsageModal({
   const [endTime, setEndTime] = useState(existing?.endTime ?? entry.endTime ?? minutesToTime(timeToMinutes(nowTime()) + 60));
   const [personId, setPersonId] = useState(existing?.personId ?? entry.actualPersonId ?? entry.personId);
   const [usageType, setUsageType] = useState<UsageType>(existing?.usageType ?? "share");
-  const [charge, setCharge] = useState(true);
+  const [dieselSettlement, setDieselSettlement] = useState<DieselSettlement>(
+    existing?.dieselSettlement ?? "unpaid"
+  );
+  const [shortageLiters, setShortageLiters] = useState(existing?.dieselShortageLiters ?? 0);
+  const [royaltyPayMode, setRoyaltyPayMode] = useState<RoyaltyPayMode>(existing?.royaltyPayMode ?? "credit");
   const [notes, setNotes] = useState(existing?.notes ?? "");
   const [reason, setReason] = useState("");
   const [picking, setPicking] = useState(false);
@@ -833,6 +1284,12 @@ function UsageModal({
   const draft = computeUsageDraft(pump, day, startTime, endTime);
   const shareholder = shareholderOfPerson(state, pump.id, personId);
   const right = shareholder ? currentRight(state, shareholder.id, day.date) : null;
+  const shortageAmount = Math.min(
+    Math.round(shortageLiters * (draft.fuelPriceSnapshot || 0)),
+    Math.round(draft.fuelAmountDue)
+  );
+  const dieselOwed =
+    dieselSettlement === "paid" ? 0 : dieselSettlement === "shortage" ? shortageAmount : Math.round(draft.fuelAmountDue);
 
   return (
     <Modal open onClose={onClose} title={existing ? "تعديل الاستخدام الفعلي" : "تسجيل الاستخدام الفعلي"}>
@@ -843,6 +1300,7 @@ function UsageModal({
             className="w-full rounded-2xl border border-gray-200 bg-gray-50 px-4 py-3 text-right text-sm font-bold text-gray-800 dark:border-slate-600 dark:bg-slate-700 dark:text-white"
           >
             {personName(state, personId)}
+            {findPerson(state, personId)?.phone ? ` — ${findPerson(state, personId)?.phone}` : ""}
           </button>
         </Field>
 
@@ -856,15 +1314,15 @@ function UsageModal({
         </div>
 
         <div className="grid grid-cols-2 gap-2 rounded-2xl bg-gray-50 p-3 text-[11px] dark:bg-slate-700">
-          <SnapRow label="المدة" value={`${formatDuration(draft.minutes)}${draft.crossesMidnight ? " (يعبر منتصف الليل)" : ""}`} />
-          <SnapRow label="الاستهلاك" value={`${draft.fuelLiters} لتر`} />
-          <SnapRow label="سعر اللتر (مرجعي)" value={`${draft.fuelPriceSnapshot}`} />
-          <SnapRow label="قيمة الديزل" value={formatMoney(draft.fuelAmountDue, pump.currency)} />
-          <SnapRow label="الرواسة" value={formatMoney(draft.royaltyAmountDue, pump.currency)} />
-          <SnapRow
-            label="المسؤول عن التكلفة"
-            value={findPerson(state, personId)?.name ?? "—"}
+          <Row
+            label="عدد الساعات المستخدمة"
+            value={`${formatDuration(draft.minutes)}${draft.crossesMidnight ? " (يعبر منتصف الليل)" : ""}`}
           />
+          <Row label="الاستهلاك" value={`${draft.fuelLiters} لتر`} />
+          <Row label="سعر اللتر (مرجعي)" value={`${draft.fuelPriceSnapshot}`} />
+          <Row label="قيمة الديزل" value={formatMoney(draft.fuelAmountDue, pump.currency)} />
+          <Row label="الرواسة" value={formatMoney(draft.royaltyAmountDue, pump.currency)} />
+          <Row label="المسؤول عن التكلفة" value={findPerson(state, personId)?.name ?? "—"} />
           <div className="col-span-2 text-[10px] leading-relaxed text-gray-400">
             هذه القيم تُحفظ داخل عملية الاستخدام (Snapshot) — أي تغيير في سعر الديزل أو الرواسة لاحقًا لا يعيد
             حساب هذه العملية.
@@ -882,17 +1340,67 @@ function UsageModal({
           </Select>
         </Field>
 
-        <label className="flex items-center justify-between rounded-2xl bg-gray-50 px-3 py-3 dark:bg-slate-700">
-          <span className="text-xs font-bold text-gray-700 dark:text-slate-200">
-            تسجيل التكلفة كدين على المستخدم الفعلي
-          </span>
-          <input
-            type="checkbox"
-            checked={charge}
-            onChange={(e) => setCharge(e.target.checked)}
-            className="h-5 w-5 accent-emerald-600"
-          />
-        </label>
+        {/* تسديد الديزل — كل خيار له فعل مالي مختلف */}
+        <Field label="تسديد الديزل">
+          <div className="grid grid-cols-3 gap-1.5">
+            {DIESEL_SETTLEMENT_OPTIONS.map((o) => (
+              <button
+                key={o.id}
+                onClick={() => setDieselSettlement(o.id)}
+                title={o.action}
+                className={cx(
+                  "rounded-2xl border px-2 py-2 text-[11px] font-bold transition",
+                  dieselSettlement === o.id
+                    ? o.id === "paid"
+                      ? "border-emerald-400 bg-emerald-50 text-emerald-700"
+                      : o.id === "shortage"
+                        ? "border-amber-400 bg-amber-50 text-amber-700"
+                        : "border-red-300 bg-red-50 text-red-600"
+                    : "border-gray-200 text-gray-500 dark:border-slate-600 dark:text-slate-300"
+                )}
+                aria-label={`تسديد الديزل: ${o.label}`}
+              >
+                {o.label}
+              </button>
+            ))}
+          </div>
+        </Field>
+        {dieselSettlement === "shortage" ? (
+          <Field label="عدد لترات النقص" hint="يُسجَّل النقص دينًا عليه، والباقي سداد">
+            <NumberInput value={shortageLiters} onChange={(e) => setShortageLiters(Number(e.target.value))} />
+          </Field>
+        ) : null}
+        <p className="rounded-2xl bg-gray-50 px-3 py-2 text-[11px] text-gray-500 dark:bg-slate-700 dark:text-slate-300">
+          {DIESEL_SETTLEMENT_OPTIONS.find((o) => o.id === dieselSettlement)?.action} · يبقى عليه من الديزل:{" "}
+          <b>{formatMoney(dieselOwed, pump.currency)}</b>
+        </p>
+
+        {/* رسوم الرواسة — نقد أو أجل */}
+        <Field label="رسوم الرواسة">
+          <div className="grid grid-cols-2 gap-1.5">
+            {ROYALTY_MODE_OPTIONS.map((o) => (
+              <button
+                key={o.id}
+                onClick={() => setRoyaltyPayMode(o.id)}
+                title={o.action}
+                className={cx(
+                  "rounded-2xl border px-2 py-2 text-[11px] font-bold transition",
+                  royaltyPayMode === o.id
+                    ? o.id === "cash"
+                      ? "border-emerald-400 bg-emerald-50 text-emerald-700"
+                      : "border-amber-400 bg-amber-50 text-amber-700"
+                    : "border-gray-200 text-gray-500 dark:border-slate-600 dark:text-slate-300"
+                )}
+                aria-label={`سداد الرواسة: ${o.label}`}
+              >
+                {o.label}
+              </button>
+            ))}
+          </div>
+        </Field>
+        <p className="rounded-2xl bg-gray-50 px-3 py-2 text-[11px] text-gray-500 dark:bg-slate-700 dark:text-slate-300">
+          {ROYALTY_MODE_OPTIONS.find((o) => o.id === royaltyPayMode)?.action} · {formatMoney(draft.royaltyAmountDue, pump.currency)}
+        </p>
 
         <Field label="ملاحظات">
           <TextArea value={notes} onChange={(e) => setNotes(e.target.value)} rows={2} />
@@ -934,7 +1442,10 @@ function UsageModal({
                 startTime,
                 endTime,
                 notes,
-                charge,
+                dieselSettlement,
+                dieselShortageLiters: dieselSettlement === "shortage" ? shortageLiters : 0,
+                royaltyPayMode,
+                settlementNote: notes,
                 overCapacityReason: reason,
                 actor,
               });
@@ -946,7 +1457,7 @@ function UsageModal({
           </Button>
         </div>
         <p className="text-[10px] text-gray-400">
-          عند التعديل يُلغى السجل القديم ويُسجَّل سجل جديد — لا يُحذف التاريخ.
+          عند التعديل يُلغى السجل القديم وحركاته المالية تُلغى (لا تُحذف) ويُسجَّل سجل جديد — لا يُفقد التاريخ.
         </p>
       </div>
 
@@ -960,15 +1471,6 @@ function UsageModal({
         />
       ) : null}
     </Modal>
-  );
-}
-
-function SnapRow({ label, value }: { label: string; value: string }) {
-  return (
-    <div>
-      <div className="text-[10px] font-bold text-gray-400">{label}</div>
-      <div className="font-extrabold text-gray-700 dark:text-slate-200">{value}</div>
-    </div>
   );
 }
 

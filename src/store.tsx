@@ -15,12 +15,14 @@ import type {
   DialaDay,
   DialaRound,
   DayEntry,
+  DieselSettlement,
   FuelRecord,
   MatchStatus,
   OperatorRecord,
   Person,
   PersonalRecord,
   Pump,
+  RoyaltyPayMode,
   Settlement,
   ShareRight,
   Shareholder,
@@ -31,8 +33,17 @@ import type {
   UsageType,
 } from "./domain/types";
 import { durationMin, isoToShort, nowTime, todayISO, uid } from "./domain/util";
-import { computeUsageDraft, dayEntries as entriesOfDay, findPerson, personBalance, planEntriesFromSchedule } from "./domain/rules";
-import { emptyState, migrateV1, seedDemo } from "./domain/migrate";
+import {
+  computeUsageDraft,
+  dayEntries as entriesOfDay,
+  dieselSettlementLabel,
+  findPerson,
+  personBalance,
+  planEntriesFromSchedule,
+  royaltyModeLabel,
+  settlementPostings,
+} from "./domain/rules";
+import { emptyState, migrateV1, normalizeState, seedDemo } from "./domain/migrate";
 import { LEGACY_MANAGER_STORAGE_KEY as LEGACY_KEY, MANAGER_STORAGE_KEY as STORAGE_KEY } from "./domain/storage";
 
 /* --------------------------------- الأفعال ------------------------------ */
@@ -76,9 +87,22 @@ export type Action =
       startTime: string;
       endTime: string;
       notes: string;
-      charge: boolean;
+      dieselSettlement: DieselSettlement;
+      dieselShortageLiters: number;
+      royaltyPayMode: RoyaltyPayMode;
+      settlementNote: string;
       overCapacityReason: string;
       actor: string;
+    }
+  | {
+      type: "SET_USAGE_SETTLEMENT";
+      usageId: string;
+      dieselSettlement: DieselSettlement;
+      dieselShortageLiters: number;
+      royaltyPayMode: RoyaltyPayMode;
+      settlementNote: string;
+      actor: string;
+      reason: string;
     }
   | { type: "VOID_USAGE"; id: string; reason: string; actor: string }
   | { type: "SAVE_STOPPAGE"; stoppage: Stoppage; isNew: boolean }
@@ -790,6 +814,10 @@ function reducer(state: AppState, action: Action): AppState {
         fuelAmountDue: draft.fuelAmountDue,
         royaltyHourlySnapshot: draft.royaltyHourlySnapshot,
         royaltyAmountDue: draft.royaltyAmountDue,
+        dieselSettlement: action.dieselSettlement,
+        dieselShortageLiters: Math.max(0, action.dieselShortageLiters || 0),
+        royaltyPayMode: action.royaltyPayMode,
+        settlementNote: action.settlementNote,
         overCapacity,
         overCapacityReason: overCapacity ? action.overCapacityReason : "",
         notes: action.notes,
@@ -798,14 +826,10 @@ function reducer(state: AppState, action: Action): AppState {
         createdBy: action.actor,
       };
 
-      const newTx: Transaction[] = [];
+      const newTx: Transaction[] = settlementPostings(usage).map((p) =>
+        makeTx(day, usage, p.kind, p.direction, p.amount, p.reason, p.notes)
+      );
       const person = findPerson(state, action.personId);
-      if (action.charge && draft.fuelAmountDue > 0) {
-        newTx.push(makeTx(day, usage, "fuel", "debit", draft.fuelAmountDue, "استحقاق ديزل"));
-      }
-      if (action.charge && draft.royaltyAmountDue > 0) {
-        newTx.push(makeTx(day, usage, "royalty", "debit", draft.royaltyAmountDue, "استحقاق رواسة"));
-      }
 
       const next = {
         ...state,
@@ -823,19 +847,88 @@ function reducer(state: AppState, action: Action): AppState {
         action: "create",
         entity: "usage",
         entityId: usage.id,
-        summary: `تسجيل استخدام فعلي: ${person?.name ?? ""} — ${action.startTime} → ${action.endTime} (${Math.round(draft.minutes)} دقيقة، ${draft.fuelLiters} لتر)`,
+        summary: `تسجيل استخدام فعلي: ${person?.name ?? ""} — ${action.startTime} → ${action.endTime} (${Math.round(draft.minutes)} دقيقة، ${draft.fuelLiters} لتر) · ديزل: ${dieselSettlementLabel(
+          usage.dieselSettlement
+        )} · رواسة: ${royaltyModeLabel(usage.royaltyPayMode)}`,
         after: usage,
         op: "create",
         notify: [
           {
             kind: "debt",
-            level: overCapacity ? "danger" : "info",
+            level: overCapacity ? "danger" : usage.dieselSettlement === "unpaid" ? "warn" : "info",
             title: overCapacity ? "تجاوز ساعات التشغيل" : "تسجيل استخدام",
             body: overCapacity
               ? `مجموع ساعات اليوم تجاوز ساعات تشغيل المضخة — السبب: ${action.overCapacityReason || "غير محدد"}`
-              : `سُجّل استخدام ${person?.name ?? ""} بمقدار ${Math.round(draft.minutes)} دقيقة.`,
+              : `سُجّل استخدام ${person?.name ?? ""} بمقدار ${Math.round(draft.minutes)} دقيقة — ديزل: ${dieselSettlementLabel(
+                  usage.dieselSettlement
+                )}${usage.dieselSettlement === "shortage" ? ` (${usage.dieselShortageLiters} لتر)` : ""} · رواسة: ${royaltyModeLabel(
+                  usage.royaltyPayMode
+                )}.`,
             personId: action.personId,
             dayId: day.id,
+          },
+        ],
+      });
+    }
+
+    case "SET_USAGE_SETTLEMENT": {
+      const usage = state.usages.find((u) => u.id === action.usageId);
+      if (!usage) return state;
+      const day = state.days.find((d) => d.id === usage.dayId);
+      if (!day) return state;
+      const updated: ActualUsage = {
+        ...usage,
+        dieselSettlement: action.dieselSettlement,
+        dieselShortageLiters: Math.max(0, action.dieselShortageLiters || 0),
+        royaltyPayMode: action.royaltyPayMode,
+        settlementNote: action.settlementNote,
+      };
+      // الحركات السابقة لهذه العملية تُلغى (لا تُحذف) ثم تُسجَّل الحركات الجديدة
+      const at = new Date().toISOString();
+      const voidedTx = state.transactions.map((t) =>
+        t.usageId === usage.id && t.status === "posted"
+          ? {
+              ...t,
+              status: "void" as const,
+              notes: `${t.notes}${t.notes ? " | " : ""}أُلغيت لتعديل حالة التسديد (${at.slice(0, 16).replace("T", " ")}): ${
+                action.reason || "بدون سبب مسجّل"
+              }`,
+            }
+          : t
+      );
+      const newTx = settlementPostings(updated).map((p) =>
+        makeTx(day, updated, p.kind, p.direction, p.amount, p.reason, p.notes)
+      );
+      const next = {
+        ...state,
+        usages: state.usages.map((u) => (u.id === updated.id ? updated : u)),
+        transactions: [...voidedTx, ...newTx],
+      };
+      return commit(state, next, {
+        action: "update",
+        entity: "usage",
+        entityId: updated.id,
+        summary: `تعديل تسديد ${findPerson(state, updated.personId)?.name ?? ""} — ديزل: ${dieselSettlementLabel(
+          updated.dieselSettlement
+        )}${updated.dieselSettlement === "shortage" ? ` (${updated.dieselShortageLiters} لتر)` : ""} · رواسة: ${royaltyModeLabel(
+          updated.royaltyPayMode
+        )}`,
+        before: usage,
+        after: updated,
+        reason: action.reason,
+        actor: action.actor,
+        notify: [
+          {
+            kind: updated.dieselSettlement === "unpaid" ? "debt" : "payment",
+            level: updated.dieselSettlement === "unpaid" ? "warn" : "info",
+            title: "تعديل حالة التسديد",
+            body: `${findPerson(state, updated.personId)?.name ?? ""}: ديزل ${dieselSettlementLabel(
+              updated.dieselSettlement
+            )} · رواسة ${royaltyModeLabel(updated.royaltyPayMode)}${
+              action.reason ? ` — ${action.reason}` : ""
+            }`,
+            personId: updated.personId,
+            dayId: updated.dayId,
           },
         ],
       });
@@ -1222,7 +1315,8 @@ function makeTx(
   kind: Transaction["kind"],
   direction: Transaction["direction"],
   amount: number,
-  reason: string
+  reason: string,
+  notes = ""
 ): Transaction {
   return {
     id: uid("tx"),
@@ -1241,9 +1335,10 @@ function makeTx(
     status: "posted",
     correctsTxId: null,
     notes:
-      kind === "fuel"
+      notes ||
+      (kind === "fuel"
         ? `محسوبة من ${usage.fuelLiters} لتر × ${usage.fuelPriceSnapshot} (استهلاك وقت العملية ${usage.fuelPerHourSnapshot} لتر/ساعة)`
-        : "",
+        : ""),
     source: "manager",
     createdAt: new Date().toISOString(),
     createdBy: "manager",
@@ -1285,10 +1380,24 @@ export interface AppActions {
     startTime: string;
     endTime: string;
     notes: string;
-    charge: boolean;
+    dieselSettlement: DieselSettlement;
+    dieselShortageLiters: number;
+    royaltyPayMode: RoyaltyPayMode;
+    settlementNote: string;
     overCapacityReason: string;
     actor: string;
   }) => void;
+  setUsageSettlement: (
+    usageId: string,
+    input: {
+      dieselSettlement: DieselSettlement;
+      dieselShortageLiters: number;
+      royaltyPayMode: RoyaltyPayMode;
+      settlementNote: string;
+      reason: string;
+      actor: string;
+    }
+  ) => void;
   voidUsage: (id: string, reason: string, actor: string) => void;
   saveStoppage: (s: Stoppage, isNew: boolean) => void;
   archiveStoppage: (id: string, archived: boolean) => void;
@@ -1330,14 +1439,8 @@ function loadInitial(): AppState {
     if (raw) {
       const parsed = JSON.parse(raw) as AppState;
       if (parsed && parsed.version === 2) {
-        const base = emptyState();
-        return {
-          ...base,
-          ...parsed,
-          rounds: parsed.rounds ?? [],
-          counters: { ...base.counters, ...parsed.counters },
-          settings: { ...base.settings, ...parsed.settings },
-        };
+        // الحقول الحديثة تُضاف ولا تُحذف أي بيانات قائمة
+        return normalizeState(parsed);
       }
       return migrateV1(parsed);
     }
@@ -1404,6 +1507,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
       deriveEntries: (dayId) => dispatch({ type: "DERIVE_ENTRIES", dayId }),
       removeEntry: (id) => dispatch({ type: "REMOVE_ENTRY", id }),
       recordUsage: (input) => dispatch({ type: "RECORD_USAGE", ...input }),
+      setUsageSettlement: (usageId, input) =>
+        dispatch({ type: "SET_USAGE_SETTLEMENT", usageId, ...input }),
       voidUsage: (id, reason, actor) => dispatch({ type: "VOID_USAGE", id, reason, actor }),
       saveStoppage: (stoppage, isNew) => dispatch({ type: "SAVE_STOPPAGE", stoppage, isNew }),
       archiveStoppage: (id, archived) => dispatch({ type: "ARCHIVE_STOPPAGE", id, archived }),

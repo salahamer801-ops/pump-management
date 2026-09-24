@@ -10,11 +10,16 @@ import type {
   DayIssueSeverity,
   DialaDay,
   DialaRound,
+  DieselSettlement,
   Person,
   Pump,
+  RightKind,
+  RoyaltyPayMode,
   Shareholder,
+  ShareholderUseStatus,
   ShareRight,
   Transaction,
+  TxDirection,
   TxKind,
   UsageType,
 } from "./types";
@@ -691,6 +696,268 @@ export function usageTypeLabel(t: UsageType): string {
     default:
       return "ضيف";
   }
+}
+
+/* -------------------- حالة استخدام السهم عند المساهم (§5,6,7) ---------- */
+
+export const USE_STATUS_OPTIONS: {
+  id: ShareholderUseStatus;
+  label: string;
+  hint: string;
+}[] = [
+  { id: "continuing", label: "مستمر", hint: "يستخدم سهمه بنفسه — بلا تأجير ولا بيع" },
+  { id: "rented", label: "مؤاجر", hint: "أجّر سهمه — سجّل اسم المستأجر ورقمه" },
+  { id: "transferred", label: "مناقل", hint: "نقل سهمه (تنازل) لشخص آخر — سجّل اسمه ورقمه" },
+  { id: "sold", label: "بايع", hint: "باع سهمه — سجّل اسم المالك الجديد ورقمه" },
+];
+
+export function shareholderUseStatus(sh: Shareholder): ShareholderUseStatus {
+  return sh.useStatus ?? "continuing";
+}
+
+export function useStatusLabel(status: ShareholderUseStatus): string {
+  return USE_STATUS_OPTIONS.find((o) => o.id === status)?.label ?? "مستمر";
+}
+
+export function useStatusTone(status: ShareholderUseStatus): "green" | "amber" | "blue" | "gray" {
+  switch (status) {
+    case "rented":
+      return "amber";
+    case "transferred":
+      return "blue";
+    case "sold":
+      return "gray";
+    default:
+      return "green";
+  }
+}
+
+/** هل هذه الحالة تحتاج تسجيل طرف آخر (مستأجر أو مالك جديد)؟ */
+export function useStatusNeedsCounterpart(status: ShareholderUseStatus): boolean {
+  return status !== "continuing";
+}
+
+/** نوع العلاقة المسجّل في سجل الحقوق مقابل حالة الاستخدام */
+export function useStatusRightKind(status: ShareholderUseStatus): RightKind {
+  return status === "rented" ? "rent" : "transfer";
+}
+
+/** الطرف الآخر للمساهم: المستأجر / المالك الجديد / المتنازل له */
+export function shareholderCounterpart(
+  state: AppState,
+  sh: Shareholder
+): { person: Person; phone: string } | null {
+  const person = findPerson(state, sh.counterpartPersonId ?? null);
+  if (!person) return null;
+  return { person, phone: sh.counterpartPhone || person.phone };
+}
+
+/**
+ * المساهمون الأساسيون المرتبطون بمضخة ومَن يستخدم سهمهم الآن
+ * — سجل مرجعي ثابت لا يتأثر بترتيب اليوم الفعلي.
+ */
+export interface ShareholderUsageRow {
+  shareholder: Shareholder;
+  person: Person | null;
+  status: ShareholderUseStatus;
+  counterpart: Person | null;
+  counterpartPhone: string;
+  activeRight: ShareRight | null;
+  currentHolder: Person | null;
+}
+
+export function shareholderUsageRows(state: AppState, pumpId: string): ShareholderUsageRow[] {
+  return activeShareholders(state, pumpId).map((sh) => {
+    const status = shareholderUseStatus(sh);
+    const counterpart = findPerson(state, sh.counterpartPersonId ?? null);
+    const activeRight = currentRight(state, sh.id);
+    const holderId = activeRight ? activeRight.holderPersonId : sh.personId;
+    return {
+      shareholder: sh,
+      person: findPerson(state, sh.personId),
+      status,
+      counterpart,
+      counterpartPhone: sh.counterpartPhone || counterpart?.phone || "",
+      activeRight,
+      currentHolder: findPerson(state, holderId),
+    };
+  });
+}
+
+/* ------------------- تسديد الديزل والرواسة لكل مستخدم (§21-24) --------- */
+
+export const DIESEL_SETTLEMENT_OPTIONS: {
+  id: DieselSettlement;
+  label: string;
+  action: string;
+}[] = [
+  { id: "paid", label: "مسدد", action: "يُسجَّل استحقاق ودفعة نقدية — لا يبقى عليه ديزل" },
+  { id: "shortage", label: "نقص", action: "يُسجَّل النقص فقط دينًا عليه" },
+  { id: "unpaid", label: "غير مسدد", action: "يُسجَّل كامل قيمة الديزل دينًا عليه" },
+];
+
+export const ROYALTY_MODE_OPTIONS: { id: RoyaltyPayMode; label: string; action: string }[] = [
+  { id: "cash", label: "نقد", action: "رواسة مدفوعة نقدًا — لا دين" },
+  { id: "credit", label: "أجل", action: "رواسة آجلة — تُسجَّل دينًا" },
+];
+
+export function dieselSettlementLabel(v: DieselSettlement): string {
+  return DIESEL_SETTLEMENT_OPTIONS.find((o) => o.id === v)?.label ?? "غير مسدد";
+}
+
+export function royaltyModeLabel(v: RoyaltyPayMode): string {
+  return v === "cash" ? "نقد" : "أجل";
+}
+
+/** قيمة نقص الديزل المحسوبة من اللترات بسعر العملية (Snapshot) */
+export function shortageAmountOf(usage: {
+  dieselShortageLiters: number;
+  fuelPriceSnapshot: number;
+  fuelAmountDue: number;
+}): number {
+  const raw = Math.round((usage.dieselShortageLiters || 0) * (usage.fuelPriceSnapshot || 0));
+  return clamp(raw, 0, Math.round(usage.fuelAmountDue || 0));
+}
+
+export interface SettlementPosting {
+  kind: TxKind;
+  direction: TxDirection;
+  amount: number;
+  reason: string;
+  notes: string;
+}
+
+/**
+ * الحركات المالية الناتجة عن حالة التسديد — مصدر واحد لكل الشاشات.
+ * كل خيار له أثر مختلف: مسدد (استحقاق + سداد)، نقص (استحقاق + سداد جزئي)،
+ * غير مسدد (استحقاق كامل)، والرواسة: نقد (استحقاق + سداد) أو أجل (استحقاق فقط).
+ */
+export function settlementPostings(usage: ActualUsage): SettlementPosting[] {
+  const out: SettlementPosting[] = [];
+  const diesel = usage.dieselSettlement ?? "unpaid";
+  const royaltyMode = usage.royaltyPayMode ?? "credit";
+  const fuelDue = Math.round(usage.fuelAmountDue || 0);
+  const royaltyDue = Math.round(usage.royaltyAmountDue || 0);
+
+  if (fuelDue > 0) {
+    out.push({
+      kind: "fuel",
+      direction: "debit",
+      amount: fuelDue,
+      reason: "استحقاق ديزل",
+      notes: `محسوبة من ${usage.fuelLiters} لتر × ${usage.fuelPriceSnapshot} (استهلاك وقت العملية ${usage.fuelPerHourSnapshot} لتر/ساعة)`,
+    });
+    if (diesel === "paid") {
+      out.push({
+        kind: "payment",
+        direction: "credit",
+        amount: fuelDue,
+        reason: "سداد ديزل نقدًا",
+        notes: usage.settlementNote || "",
+      });
+    } else if (diesel === "shortage") {
+      const paidPart = fuelDue - shortageAmountOf(usage);
+      if (paidPart > 0) {
+        out.push({
+          kind: "payment",
+          direction: "credit",
+          amount: paidPart,
+          reason: `سداد جزئي — نقص ${usage.dieselShortageLiters} لتر`,
+          notes: usage.settlementNote || "",
+        });
+      }
+    }
+  }
+
+  if (royaltyDue > 0) {
+    out.push({
+      kind: "royalty",
+      direction: "debit",
+      amount: royaltyDue,
+      reason: royaltyMode === "cash" ? "استحقاق رواسة" : "رواسة آجلة (دين)",
+      notes: usage.settlementNote || "",
+    });
+    if (royaltyMode === "cash") {
+      out.push({
+        kind: "payment",
+        direction: "credit",
+        amount: royaltyDue,
+        reason: "سداد رواسة نقدًا",
+        notes: "",
+      });
+    }
+  }
+
+  return out;
+}
+
+export interface DaySettlementTotals {
+  users: number;
+  dieselDue: number;
+  dieselPaid: number;
+  dieselOwed: number;
+  shortageLiters: number;
+  shortageAmount: number;
+  unpaidCount: number;
+  shortageCount: number;
+  paidCount: number;
+  royaltyDue: number;
+  royaltyCash: number;
+  royaltyCredit: number;
+  cashCount: number;
+  creditCount: number;
+}
+
+/** ملخص تسديدات اليوم: ديزل مسدد/نقص/غير مسدد ورواسة نقد/أجل */
+export function daySettlementTotals(state: AppState, dayId: string): DaySettlementTotals {
+  const usages = state.usages.filter((u) => u.dayId === dayId && u.status === "active");
+  const totals: DaySettlementTotals = {
+    users: usages.length,
+    dieselDue: 0,
+    dieselPaid: 0,
+    dieselOwed: 0,
+    shortageLiters: 0,
+    shortageAmount: 0,
+    unpaidCount: 0,
+    shortageCount: 0,
+    paidCount: 0,
+    royaltyDue: 0,
+    royaltyCash: 0,
+    royaltyCredit: 0,
+    cashCount: 0,
+    creditCount: 0,
+  };
+  for (const u of usages) {
+    const diesel = u.dieselSettlement ?? "unpaid";
+    const mode = u.royaltyPayMode ?? "credit";
+    const fuelDue = Math.round(u.fuelAmountDue || 0);
+    totals.dieselDue += fuelDue;
+    if (diesel === "paid") {
+      totals.paidCount += 1;
+      totals.dieselPaid += fuelDue;
+    } else if (diesel === "shortage") {
+      totals.shortageCount += 1;
+      const short = shortageAmountOf(u);
+      totals.shortageLiters += u.dieselShortageLiters || 0;
+      totals.shortageAmount += short;
+      totals.dieselPaid += fuelDue - short;
+      totals.dieselOwed += short;
+    } else {
+      totals.unpaidCount += 1;
+      totals.dieselOwed += fuelDue;
+    }
+    const royaltyDue = Math.round(u.royaltyAmountDue || 0);
+    totals.royaltyDue += royaltyDue;
+    if (mode === "cash") {
+      totals.cashCount += 1;
+      totals.royaltyCash += royaltyDue;
+    } else {
+      totals.creditCount += 1;
+      totals.royaltyCredit += royaltyDue;
+    }
+  }
+  totals.shortageLiters = Math.round(totals.shortageLiters * 100) / 100;
+  return totals;
 }
 
 /* ------------------------------- المالية (§27) ------------------------- */

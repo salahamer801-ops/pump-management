@@ -52,6 +52,36 @@ export function emptyState(): AppState {
   };
 }
 
+/**
+ * تصفية الحالة المقروءة من التخزين: نضمن وجود الحقول الحديثة
+ * (حالة استخدام السهم، حالة تسديد الديزل، نوع سداد الرواسة) دون حذف أي بيانات قديمة.
+ */
+export function normalizeState(input: AppState): AppState {
+  const base = emptyState();
+  return {
+    ...base,
+    ...input,
+    rounds: input.rounds ?? [],
+    counters: { ...base.counters, ...input.counters },
+    settings: { ...base.settings, ...input.settings },
+    shareholders: (input.shareholders ?? []).map((s) => ({
+      ...s,
+      useStatus: s.useStatus ?? "continuing",
+      counterpartPersonId: s.counterpartPersonId ?? null,
+      counterpartPhone: s.counterpartPhone ?? "",
+      useStatusAt: s.useStatusAt ?? "",
+      useStatusNote: s.useStatusNote ?? "",
+    })),
+    usages: (input.usages ?? []).map((u) => ({
+      ...u,
+      dieselSettlement: u.dieselSettlement ?? "unpaid",
+      dieselShortageLiters: u.dieselShortageLiters ?? 0,
+      royaltyPayMode: u.royaltyPayMode ?? "credit",
+      settlementNote: u.settlementNote ?? "",
+    })),
+  };
+}
+
 /* ------------------------------ ترحيل v1 ------------------------------- */
 
 export function pumpFromV1(p: PumpV1): Pump {
@@ -125,6 +155,11 @@ export function migrateV1(raw: unknown): AppState {
       startDate: (c.createdAt || new Date().toISOString()).slice(0, 10),
       endDate: null,
       status: c.archived ? "ended" : "active",
+      useStatus: "continuing",
+      counterpartPersonId: null,
+      counterpartPhone: "",
+      useStatusAt: "",
+      useStatusNote: "",
       notes: "",
       archived: !!c.archived,
       createdAt: c.createdAt || new Date().toISOString(),
@@ -223,6 +258,10 @@ export function migrateV1(raw: unknown): AppState {
           fuelAmountDue: draft.fuelAmountDue,
           royaltyHourlySnapshot: draft.royaltyHourlySnapshot,
           royaltyAmountDue: draft.royaltyAmountDue,
+          dieselSettlement: "unpaid",
+          dieselShortageLiters: 0,
+          royaltyPayMode: "credit",
+          settlementNote: "حالة مرجعية من النظام القديم — الحركات المالية محفوظة كما وردت",
           overCapacity: false,
           overCapacityReason: "",
           notes: "مُرحَّل من النظام القديم",
@@ -414,6 +453,11 @@ export function seedDemo(): AppState {
     startDate: addDaysISO(today, -120),
     endDate: null,
     status: "active",
+    useStatus: "continuing",
+    counterpartPersonId: null,
+    counterpartPhone: "",
+    useStatusAt: "",
+    useStatusNote: "",
     notes: "",
     archived: false,
     createdAt: new Date().toISOString(),
@@ -445,6 +489,13 @@ export function seedDemo(): AppState {
     createdAt: new Date().toISOString(),
     createdBy: "manager",
   });
+
+  // حالة استخدام السهم: أحمد مؤاجر (المستأجر محمد كريم) — المساهم الأساسي يبقى ثابتًا
+  shAhmed.useStatus = "rented";
+  shAhmed.counterpartPersonId = mohammedK.id;
+  shAhmed.counterpartPhone = mohammedK.phone;
+  shAhmed.useStatusAt = addDaysISO(today, -30);
+  shAhmed.useStatusNote = "مؤاجر لمحمد كريم لمدة سنة";
 
   // يوم أمس: مُغلق مع استخدام فعلي
   const mkDay = (date: string, number: number, status: DialaDay["status"]): DialaDay => ({
@@ -546,6 +597,12 @@ export function seedDemo(): AppState {
       fuelAmountDue: draft.fuelAmountDue,
       royaltyHourlySnapshot: draft.royaltyHourlySnapshot,
       royaltyAmountDue: draft.royaltyAmountDue,
+      dieselSettlement: entry.actualPersonId ? "unpaid" : "paid",
+      dieselShortageLiters: 0,
+      royaltyPayMode: entry.actualPersonId ? "credit" : "cash",
+      settlementNote: entry.actualPersonId
+        ? "ديزل غير مسدد — استحقاق على المستخدم الفعلي"
+        : "سدّد الديزل والرواسة نقدًا",
       overCapacity: false,
       overCapacityReason: "",
       notes: entry.actualPersonId ? "أخذ الساعات من صاحب الدور" : "",

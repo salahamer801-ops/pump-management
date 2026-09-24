@@ -21,6 +21,9 @@ import {
   personPumpRelations,
   rightsOfShareholder,
   shareholderOfPerson,
+  shareholderUseStatus,
+  useStatusLabel,
+  useStatusTone,
 } from "../../domain/rules";
 import { formatNumber } from "../../format";
 import { isoToShort, todayISO, uid } from "../../domain/util";
@@ -339,6 +342,22 @@ function PersonDetail({
                 المساهم الأساسي (سجل مرجعي ثابت)
               </span>
             </div>
+            <div className="mt-2 flex flex-wrap items-center gap-1.5">
+              <Pill tone={useStatusTone(shareholderUseStatus(shareholder))}>
+                حالة الاستخدام: {useStatusLabel(shareholderUseStatus(shareholder))}
+              </Pill>
+              {shareholder.counterpartPersonId ? (
+                <Pill tone="amber">
+                  {shareholderUseStatus(shareholder) === "rented"
+                    ? "المستأجر"
+                    : shareholderUseStatus(shareholder) === "sold"
+                      ? "المالك الجديد"
+                      : "المتنازل له"}
+                  : {personName(state, shareholder.counterpartPersonId)}
+                  {shareholder.counterpartPhone ? ` — ${shareholder.counterpartPhone}` : ""}
+                </Pill>
+              ) : null}
+            </div>
             <div className="mt-2 grid grid-cols-3 gap-2 text-center text-[11px]">
               <div>
                 <div className="text-gray-400">الوحدات</div>
@@ -527,6 +546,11 @@ function ShareModal({
               startDate: shareholder?.startDate ?? todayISO(),
               endDate: shareholder?.endDate ?? null,
               status: shareholder?.status ?? "active",
+              useStatus: shareholder?.useStatus ?? "continuing",
+              counterpartPersonId: shareholder?.counterpartPersonId ?? null,
+              counterpartPhone: shareholder?.counterpartPhone ?? "",
+              useStatusAt: shareholder?.useStatusAt ?? "",
+              useStatusNote: shareholder?.useStatusNote ?? "",
               notes,
               archived: shareholder?.archived ?? false,
               createdAt: shareholder?.createdAt ?? new Date().toISOString(),

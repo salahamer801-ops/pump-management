@@ -63,6 +63,13 @@ export interface Person {
   createdBy: string;
 }
 
+/**
+ * حالة استخدام السهم عند المساهم الأساسي:
+ * مستمر = يستخدمه بنفسه · مؤاجر · مناقل (نقل/تنازل) · بايع
+ * المساهم الأساسي يبقى ثابتًا في كل الحالات — الحالة تصف مَن يستخدم السهم الآن.
+ */
+export type ShareholderUseStatus = "continuing" | "rented" | "transferred" | "sold";
+
 /** المساهم الأساسي — سجل مرجعي داخل المضخة */
 export interface Shareholder {
   id: ID;
@@ -78,6 +85,15 @@ export interface Shareholder {
   startDate: string;
   endDate: string | null;
   status: "active" | "suspended" | "ended";
+  /* --- حالة استخدام السهم: مستمر / مؤاجر / مناقل / بايع --- */
+  useStatus: ShareholderUseStatus;
+  /** الطرف الآخر: المستأجر أو المالك الجديد أو المتنازل له */
+  counterpartPersonId: ID | null;
+  /** رقم هاتف الطرف الآخر كما أُدخل */
+  counterpartPhone: string;
+  /** تاريخ تسجيل الحالة */
+  useStatusAt: string;
+  useStatusNote: string;
   notes: string;
   archived: boolean;
   createdAt: string;
@@ -206,6 +222,12 @@ export interface DayEntry {
 
 export type UsageType = "share" | "rental" | "loan" | "purchase" | "extra" | "guest";
 
+/** هل سدّد المستخدم قيمة الديزل أم لا أم هناك نقص؟ */
+export type DieselSettlement = "paid" | "shortage" | "unpaid";
+
+/** سداد رسوم الرواسة: نقد أو أجل */
+export type RoyaltyPayMode = "cash" | "credit";
+
 export interface ActualUsage {
   id: ID;
   pumpId: ID;
@@ -229,6 +251,12 @@ export interface ActualUsage {
   fuelAmountDue: number;
   royaltyHourlySnapshot: number;
   royaltyAmountDue: number;
+  /* حالة التسديد — كل خيار له أثر مالي مختلف */
+  dieselSettlement: DieselSettlement;
+  /** نقص الديزل باللتر (عند اختيار «نقص») */
+  dieselShortageLiters: number;
+  royaltyPayMode: RoyaltyPayMode;
+  settlementNote: string;
   overCapacity: boolean;
   overCapacityReason: string;
   notes: string;
