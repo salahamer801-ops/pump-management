@@ -6,6 +6,7 @@ import {
   Layers,
   LogOut,
   Settings,
+  ShieldCheck,
   Wallet,
 } from "lucide-react";
 import { ShareholderProvider, useShareholder } from "./store";
@@ -17,8 +18,9 @@ import CyclesScreen from "./screens/CyclesScreen";
 import TurnsScreen from "./screens/TurnsScreen";
 import AccountsScreen from "./screens/AccountsScreen";
 import SettingsScreen from "./screens/SettingsScreen";
+import OfficialScreen from "./screens/OfficialScreen";
 
-type Tab = "home" | "pumps" | "cycles" | "turns" | "accounts" | "settings";
+type Tab = "home" | "pumps" | "cycles" | "turns" | "official" | "accounts" | "settings";
 
 function Shell({
   onLogout,
@@ -54,6 +56,7 @@ function Shell({
     { id: "pumps", label: t("المضخات", "Pumps"), icon: <Droplets size={22} /> },
     { id: "cycles", label: t("الدياله", "Cycles"), icon: <Layers size={22} /> },
     { id: "turns", label: t("دوري", "My Turn"), icon: <CalendarCheck size={22} /> },
+    { id: "official", label: t("السجل الرسمي", "Official"), icon: <ShieldCheck size={22} /> },
     { id: "accounts", label: t("الحسابات", "Accounts"), icon: <Wallet size={22} /> },
     { id: "settings", label: t("الإعدادات", "Settings"), icon: <Settings size={22} /> },
   ];
@@ -92,12 +95,13 @@ function Shell({
         {tab === "pumps" && <PumpsScreen />}
         {tab === "cycles" && <CyclesScreen />}
         {tab === "turns" && <TurnsScreen />}
+        {tab === "official" && <OfficialScreen />}
         {tab === "accounts" && <AccountsScreen />}
         {tab === "settings" && <SettingsScreen />}
       </main>
 
       <nav className="fixed inset-x-0 bottom-0 z-30 border-t border-gray-100 bg-white/95 backdrop-blur dark:border-slate-700 dark:bg-slate-900/95">
-        <div className="mx-auto grid max-w-lg grid-cols-6">
+        <div className="mx-auto grid max-w-lg grid-cols-7">
           {NAV.map((item) => (
             <button
               key={item.id}

@@ -1,4 +1,4 @@
-import type { Currency, EnergyType } from "./types";
+import type { Currency, EnergyType } from "./domain/types";
 
 export const CURRENCY_SYMBOL: Record<Currency, string> = {
   YER: "ر.ي",
