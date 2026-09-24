@@ -5,6 +5,9 @@ import {
   CalendarPlus,
   Layers,
   ListOrdered,
+  Lock,
+  LockOpen,
+  ShieldCheck,
   Sparkles,
   Users,
 } from "lucide-react";
@@ -45,6 +48,7 @@ import {
   Card,
   EmptyState,
   Field,
+  Modal,
   NumberInput,
   Pill,
   TextInput,
@@ -91,6 +95,9 @@ export default function DialaScreen({ onOpenDay }: { onOpenDay: (id: string | nu
       startDate,
       days: daysCount,
       endDate: roundEndDate(startDate, daysCount),
+      locked: false,
+      lockedAt: "",
+      lockedBy: "",
       notes: notes.trim(),
       createdAt: new Date().toISOString(),
       createdBy: "manager",
@@ -207,22 +214,41 @@ export default function DialaScreen({ onOpenDay }: { onOpenDay: (id: string | nu
         </Button>
 
         {created ? (
-          <div className="flex flex-wrap items-center gap-2 rounded-2xl border border-emerald-200 bg-emerald-50 px-3 py-3 dark:border-emerald-900/40 dark:bg-emerald-900/20">
-            <Sparkles size={16} className="text-emerald-600 dark:text-emerald-300" />
-            <span className="flex-1 text-[11px] font-bold text-emerald-800 dark:text-emerald-200">
-              ديالة {created.round.number}: من {isoToShort(created.round.startDate)} إلى{" "}
-              {isoToShort(created.round.endDate)} — {created.round.days} يوم
-            </span>
-            <button
-              onClick={() => {
-                const first = dayByDate(state, created.firstDate);
-                setCreated(null);
-                onOpenDay(first?.id ?? null);
-              }}
-              className="rounded-xl bg-white px-3 py-1.5 text-[11px] font-bold text-emerald-700 dark:bg-slate-800 dark:text-emerald-300"
-            >
-              ابدأ من اليوم الأول
-            </button>
+          <div className="space-y-2 rounded-2xl border border-emerald-200 bg-emerald-50 px-3 py-3 dark:border-emerald-900/40 dark:bg-emerald-900/20">
+            <div className="flex flex-wrap items-center gap-2">
+              <Sparkles size={16} className="text-emerald-600 dark:text-emerald-300" />
+              <span className="flex-1 text-[11px] font-bold text-emerald-800 dark:text-emerald-200">
+                ديالة {created.round.number}: من {isoToShort(created.round.startDate)} إلى{" "}
+                {isoToShort(created.round.endDate)} — {created.round.days} يوم (اليوم الأول … اليوم{" "}
+                {dayOrdinal(created.round.days)})
+              </span>
+              <button
+                onClick={() => {
+                  const first = dayByDate(state, created.firstDate);
+                  setCreated(null);
+                  onOpenDay(first?.id ?? null);
+                }}
+                className="rounded-xl bg-white px-3 py-1.5 text-[11px] font-bold text-emerald-700 dark:bg-slate-800 dark:text-emerald-300"
+              >
+                ابدأ من اليوم الأول
+              </button>
+            </div>
+            {(() => {
+              const live = state.rounds.find((r) => r.id === created.round.id);
+              if (!live) return null;
+              return live.locked ? (
+                <p className="rounded-xl bg-white/70 px-3 py-2 text-[11px] font-bold text-emerald-700 dark:bg-slate-800 dark:text-emerald-300">
+                  <Lock size={11} className="inline -mt-0.5" /> أيام هذه الديالة محفوظة — لا تُحذف بسهولة.
+                </p>
+              ) : (
+                <button
+                  onClick={() => actions.lockRound(created.round.id, "manager")}
+                  className="w-full rounded-xl bg-emerald-600 px-3 py-2 text-[11px] font-bold text-white"
+                >
+                  <ShieldCheck size={13} className="inline -mt-0.5" /> حفظ الديالة الآن حتى لا تُحذف أيامها بسهولة
+                </button>
+              );
+            })()}
           </div>
         ) : null}
       </Card>
@@ -250,16 +276,17 @@ export default function DialaScreen({ onOpenDay }: { onOpenDay: (id: string | nu
             description="أضف ديالة بتحديد يوم البداية وعدد الأيام، وسيُحسب تاريخ النهاية تلقائيًا."
           />
         ) : (
-          <div className="space-y-3">
-            {rounds.map((round) => (
-              <RoundCard
-                key={round.id}
-                round={round}
-                onOpenDay={onOpenDay}
-                onArchive={() => actions.archiveRound(round.id, !round.archived)}
-              />
-            ))}
-          </div>
+          <>
+            <p className="mb-2 rounded-2xl bg-emerald-50 px-3 py-2 text-[11px] leading-relaxed text-emerald-800 dark:bg-emerald-900/30 dark:text-emerald-300">
+              <ShieldCheck size={12} className="inline -mt-0.5" /> بعد تسجيل أيام الديالة اضغط «حفظ أيام الديالة» —
+              فبعد الحفظ لا تُحذف الأيام ولا تُؤرشف إلا بفك الحفظ بسبب موثّق.
+            </p>
+            <div className="space-y-3">
+              {rounds.map((round) => (
+                <RoundCard key={round.id} round={round} onOpenDay={onOpenDay} />
+              ))}
+            </div>
+          </>
         )}
       </Card>
 
@@ -338,17 +365,18 @@ export default function DialaScreen({ onOpenDay }: { onOpenDay: (id: string | nu
 function RoundCard({
   round,
   onOpenDay,
-  onArchive,
 }: {
   round: DialaRound;
   onOpenDay: (id: string | null) => void;
-  onArchive: () => void;
 }) {
   const { state, actions } = useApp();
   const pump = state.pump!;
   const days = roundDays(state, round.id);
   const done = days.filter((d) => d.status === "closed" || d.status === "completed").length;
   const todayIndex = roundDates(round.startDate, round.days).indexOf(todayISO()) + 1;
+  const [lockOpen, setLockOpen] = useState(false);
+  const [unlockOpen, setUnlockOpen] = useState(false);
+  const [archiveOpen, setArchiveOpen] = useState(false);
 
   const openOrCreateDay = (date: string) => {
     const existing = state.days.find((d) => !d.archived && d.date === date);
@@ -392,7 +420,9 @@ function RoundCard({
         "rounded-2xl border px-3 py-3",
         round.archived
           ? "border-dashed border-gray-200 opacity-70 dark:border-slate-600"
-          : "border-gray-100 dark:border-slate-700"
+          : round.locked
+            ? "border-emerald-200 bg-emerald-50/30 dark:border-emerald-900/40 dark:bg-emerald-900/10"
+            : "border-gray-100 dark:border-slate-700"
       )}
     >
       <div className="flex items-start gap-2">
@@ -403,6 +433,15 @@ function RoundCard({
             </span>
             <Pill tone={done === round.days && round.days > 0 ? "green" : "gray"}>
               {done} من {round.days} أيام منتهية
+            </Pill>
+            <Pill tone={round.locked ? "green" : "amber"}>
+              {round.locked ? (
+                <>
+                  <Lock size={10} /> محفوظة
+                </>
+              ) : (
+                "غير محفوظة"
+              )}
             </Pill>
             {todayIndex > 0 ? (
               <Pill tone="blue">اليوم {dayOrdinal(todayIndex)} من الديالة</Pill>
@@ -415,19 +454,6 @@ function RoundCard({
             {round.notes ? ` · ${round.notes}` : ""}
           </div>
         </div>
-        <button
-          onClick={onArchive}
-          className={cx(
-            "rounded-xl p-1.5",
-            round.archived
-              ? "bg-emerald-50 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300"
-              : "bg-red-50 text-red-600 dark:bg-red-900/30 dark:text-red-300"
-          )}
-          aria-label={round.archived ? `استرجاع ديالة ${round.number}` : `أرشفة ديالة ${round.number}`}
-          title={round.archived ? "استرجاع الديالة" : "أرشفة الديالة وأيامها"}
-        >
-          {round.archived ? <ArchiveRestore size={14} /> : <Archive size={14} />}
-        </button>
       </div>
 
       <div className="mt-2 grid grid-cols-4 gap-1 sm:grid-cols-7">
@@ -459,10 +485,149 @@ function RoundCard({
         })}
       </div>
 
-      <p className="mt-2 text-[10px] text-gray-400">
+      <div className="mt-2 flex flex-wrap gap-1.5">
+        {round.archived ? (
+          <button
+            onClick={() => actions.archiveRound(round.id, false, { actor: "manager" })}
+            className="rounded-xl bg-emerald-50 px-3 py-1.5 text-[11px] font-bold text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300"
+          >
+            <ArchiveRestore size={12} className="inline -mt-0.5" /> استرجاع الديالة وأيامها
+          </button>
+        ) : round.locked ? (
+          <button
+            onClick={() => setUnlockOpen(true)}
+            aria-label={`فك حفظ ديالة ${round.number}`}
+            className="rounded-xl bg-amber-50 px-3 py-1.5 text-[11px] font-bold text-amber-700 dark:bg-amber-900/30 dark:text-amber-300"
+          >
+            <LockOpen size={12} className="inline -mt-0.5" /> فك الحفظ (لتعديل أو أرشفة)
+          </button>
+        ) : (
+          <button
+            onClick={() => setLockOpen(true)}
+            aria-label={`حفظ ديالة ${round.number}`}
+            className="rounded-xl bg-emerald-600 px-3 py-1.5 text-[11px] font-bold text-white"
+          >
+            <ShieldCheck size={12} className="inline -mt-0.5" /> حفظ أيام الديالة ({days.length} يوم)
+          </button>
+        )}
+        {!round.archived ? (
+          <button
+            onClick={() => setArchiveOpen(true)}
+            aria-label={`أرشفة ديالة ${round.number}`}
+            className="rounded-xl bg-red-50 px-3 py-1.5 text-[11px] font-bold text-red-600 dark:bg-red-900/30 dark:text-red-300"
+          >
+            <Archive size={12} className="inline -mt-0.5" /> أرشفة
+          </button>
+        ) : null}
+      </div>
+
+      <p className="mt-2 text-[10px] leading-relaxed text-gray-400">
+        {round.archived
+          ? "الديالة مؤرشفة وأيامها مؤرشفة — يمكن استرجاعها في أي وقت دون فقدان أي سجل."
+          : round.locked
+            ? `أيام الديالة محفوظة${round.lockedAt ? ` بتاريخ ${isoToShort(round.lockedAt.slice(0, 10))}` : ""} — لا تُحذف ولا تُؤرشف إلا بفك الحفظ بسبب موثّق.`
+            : "الديالة غير محفوظة بعد — اضغط «حفظ أيام الديالة» لتثبيتها ومنع حذف أيامها بسهولة."}
         {days.length === 0
-          ? "لا توجد أيام مسجّلة بعد — اضغط على أي يوم لإنشائه من الجدول الأساسي."
-          : `أيام هذه الديالة المسجّلة: ${days.length} من ${round.days} — اضغط على أي يوم لفتحه أو إنشائه.`}
+          ? " لا توجد أيام مسجّلة بعد — اضغط على أي يوم لإنشائه من الجدول الأساسي."
+          : ` المسجّل منها: ${days.length} من ${round.days}.`}
+      </p>
+
+      <Modal open={lockOpen} onClose={() => setLockOpen(false)} title={`حفظ ديالة ${round.number}`}>
+        <div className="space-y-3">
+          <p className="rounded-2xl bg-emerald-50 px-3 py-3 text-xs leading-relaxed text-emerald-800 dark:bg-emerald-900/30 dark:text-emerald-300">
+            سيتم تثبيت أيام الديالة: من {isoToDisplay(round.startDate)} إلى {isoToDisplay(round.endDate)} —{" "}
+            {round.days} يوم (المسجّل منها الآن {days.length}). بعد الحفظ لا يمكن حذف أو أرشفة أي يوم من أيام الديالة
+            إلا بفك الحفظ بسبب موثّق يُسجَّل في سجل التدقيق.
+          </p>
+          <Button
+            className="w-full"
+            onClick={() => {
+              actions.lockRound(round.id, "manager");
+              setLockOpen(false);
+            }}
+          >
+            <ShieldCheck size={16} /> حفظ الديالة وأيامها ({days.length} يوم)
+          </Button>
+        </div>
+      </Modal>
+
+      <Modal open={unlockOpen} onClose={() => setUnlockOpen(false)} title={`فك حفظ ديالة ${round.number}`}>
+        <ReasonForm
+          message="فك الحفظ يسمح بتعديل أيام الديالة أو أرشفتها. السبب يُسجَّل مع اسمك ووقت التنفيذ في سجل التدقيق، ولا تُحذف أي بيانات."
+          label="سبب فك الحفظ"
+          submitLabel="تأكيد فك الحفظ"
+          onSubmit={(reason) => {
+            actions.unlockRound(round.id, reason, "manager");
+            setUnlockOpen(false);
+          }}
+        />
+      </Modal>
+
+      <Modal open={archiveOpen} onClose={() => setArchiveOpen(false)} title={`أرشفة ديالة ${round.number}`}>
+        <ReasonForm
+          message={
+            round.locked
+              ? `ديالة ${round.number} محفوظة — لا يُسمح بأرشفتها مباشرة. اكتب السبب ليُفك الحفظ ثم تُؤرشف الديالة وأيامها معًا، مع الحفاظ على كل السجلات وعدم حذف أي بيانات.`
+              : `سيتم أرشفة ديالة ${round.number} وكل أيامها (${round.days} يوم) — الأرشفة حذف ناعم ولا تُفقد أي سجلات، ويمكن استرجاعها لاحقًا.`
+          }
+          label="سبب الأرشفة"
+          submitLabel={round.locked ? "فك الحفظ وأرشفة الديالة" : "تأكيد الأرشفة"}
+          tone={round.locked ? "amber" : "red"}
+          onSubmit={(reason) => {
+            if (round.locked) actions.unlockRound(round.id, reason, "manager");
+            actions.archiveRound(round.id, true, {
+              reason,
+              actor: "manager",
+              force: round.locked,
+            });
+            setArchiveOpen(false);
+          }}
+        />
+      </Modal>
+    </div>
+  );
+}
+
+/** نموذج سبب موثّق — لا يُنفَّذ أي إجراء حساس بدون سبب مسجّل */
+function ReasonForm({
+  message,
+  label,
+  submitLabel,
+  tone = "amber",
+  onSubmit,
+}: {
+  message: string;
+  label: string;
+  submitLabel: string;
+  tone?: "amber" | "red";
+  onSubmit: (reason: string) => void;
+}) {
+  const [reason, setReason] = useState("");
+  return (
+    <div className="space-y-3">
+      <p
+        className={cx(
+          "rounded-2xl px-3 py-3 text-xs leading-relaxed",
+          tone === "red"
+            ? "bg-red-50 text-red-800 dark:bg-red-900/20 dark:text-red-300"
+            : "bg-amber-50 text-amber-800 dark:bg-amber-900/20 dark:text-amber-300"
+        )}
+      >
+        {message}
+      </p>
+      <Field label={label}>
+        <TextInput value={reason} onChange={(e) => setReason(e.target.value)} placeholder="اكتب السبب…" autoFocus />
+      </Field>
+      <Button
+        variant={tone === "red" ? "danger" : "primary"}
+        className="w-full"
+        onClick={() => onSubmit(reason.trim())}
+        disabled={!reason.trim()}
+      >
+        {submitLabel}
+      </Button>
+      <p className="text-center text-[10px] text-gray-400">
+        لن يُنفَّذ الإجراء بدون سبب — يُحفظ السبب مع اسمك ووقت التنفيذ.
       </p>
     </div>
   );

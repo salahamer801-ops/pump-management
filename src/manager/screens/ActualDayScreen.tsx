@@ -806,6 +806,15 @@ function DialaStrip({
         <Layers size={15} className="text-emerald-600" />
         <span className="text-xs font-extrabold text-gray-800 dark:text-white">ديالة {round.number}</span>
         <Pill tone="gray">{round.days} أيام</Pill>
+        <Pill tone={round.locked ? "green" : "amber"}>
+          {round.locked ? (
+            <>
+              <Lock size={10} /> محفوظة
+            </>
+          ) : (
+            "غير محفوظة"
+          )}
+        </Pill>
         {index >= 0 ? <Pill tone="blue">اليوم {dayOrdinal(index + 1)} من الديالة</Pill> : null}
         <span className="mr-auto text-[10px] text-gray-400">
           {isoToShort(round.startDate)} ← {isoToShort(round.endDate)}
@@ -848,7 +857,20 @@ function DialaStrip({
       <p className="mt-1.5 text-[10px] leading-relaxed text-gray-400">
         أيام الديالة تُسمّى اليوم الأول، الثاني… حتى آخر يوم ({dayOrdinal(round.days)})، ثم يعود الدوران بديالة جديدة
         من اليوم الأول. لا يوجد يوم فعلي خارج الديالة.
+        {round.locked
+          ? " أيام الديالة محفوظة: لا تُحذف ولا تُؤرشف إلا بفك الحفظ بسبب موثّق."
+          : ""}
       </p>
+
+      {!round.locked ? (
+        <button
+          onClick={() => actions.lockRound(round.id, "manager")}
+          aria-label={`حفظ أيام ديالة ${round.number}`}
+          className="mt-2 w-full rounded-xl bg-emerald-600 px-3 py-2 text-[11px] font-bold text-white"
+        >
+          <ShieldCheck size={13} className="inline -mt-0.5" /> حفظ أيام الديالة حتى لا تُحذف بسهولة
+        </button>
+      ) : null}
     </Card>
   );
 }
@@ -876,6 +898,9 @@ function NewDialaCard({ date, onCreated }: { date: string; onCreated: () => void
       startDate: date,
       days: count,
       endDate: roundEndDate(date, count),
+      locked: false,
+      lockedAt: "",
+      lockedBy: "",
       notes: notes.trim(),
       createdAt: new Date().toISOString(),
       createdBy: "manager",

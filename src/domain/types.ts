@@ -158,6 +158,13 @@ export interface DialaRound {
   days: number;
   /** YYYY-MM-DD — يُحسب: البداية + (عدد الأيام − 1) */
   endDate: string;
+  /**
+   * محفوظة: أيام الديالة مثبّتة بعد الحفظ ولا تُحذف ولا تُؤرشف
+   * إلا بفك الحفظ بسبب موثّق يُسجَّل في سجل التدقيق.
+   */
+  locked: boolean;
+  lockedAt: string;
+  lockedBy: string;
   notes: string;
   createdAt: string;
   createdBy: string;

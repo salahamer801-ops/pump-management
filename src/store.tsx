@@ -40,6 +40,7 @@ import {
   findPerson,
   personBalance,
   planEntriesFromSchedule,
+  roundOfDay,
   royaltyModeLabel,
   settlementPostings,
 } from "./domain/rules";
@@ -68,9 +69,11 @@ export type Action =
   | { type: "SET_DAY_STATUS"; id: string; status: DialaDay["status"]; actor: string }
   | { type: "CLOSE_DAY"; id: string; actor: string }
   | { type: "REOPEN_DAY"; id: string; actor: string; reason: string }
-  | { type: "ARCHIVE_DAY"; id: string; archived: boolean }
+  | { type: "ARCHIVE_DAY"; id: string; archived: boolean; reason?: string; actor?: string; force?: boolean }
   | { type: "CREATE_ROUND"; round: DialaRound; dates: string[] }
-  | { type: "ARCHIVE_ROUND"; id: string; archived: boolean }
+  | { type: "LOCK_ROUND"; id: string; actor: string }
+  | { type: "UNLOCK_ROUND"; id: string; reason: string; actor: string }
+  | { type: "ARCHIVE_ROUND"; id: string; archived: boolean; reason?: string; actor?: string; force?: boolean }
   | { type: "SAVE_ENTRY"; entry: DayEntry; isNew: boolean }
   | { type: "SAVE_ENTRIES"; dayId: string; entries: DayEntry[] }
   | { type: "MOVE_ENTRY"; id: string; dir: -1 | 1 }
@@ -200,8 +203,12 @@ function commit(_prev: AppState, next: AppState, log: LogInput): AppState {
   };
 }
 
-function normalizeOrders(entries: DayEntry[]): DayEntry[] {
-  return entries
+/** رفض عملية غير مسموح بها (مثل حذف يوم داخل ديالة محفوظة) مع تسجيلها في سجل التدقيق */
+function refuse(state: AppState, log: LogInput): AppState {
+  return commit(state, state, log);
+}
+
+function normalizeOrders(entries: DayEntry[]): DayEntry[] {  return entries
     .slice()
     .sort((a, b) => a.orderIndex - b.orderIndex)
     .map((e, i) => ({ ...e, orderIndex: i }));
@@ -566,6 +573,29 @@ function reducer(state: AppState, action: Action): AppState {
 
     case "ARCHIVE_DAY": {
       const before = state.days.find((d) => d.id === action.id);
+      if (!before) return state;
+      const round = roundOfDay(state, before);
+      if (action.archived && round?.locked && !action.force) {
+        // اليوم داخل ديالة محفوظة — لا يُحذف بسهولة
+        return refuse(state, {
+          action: "refuse",
+          entity: "day",
+          entityId: action.id,
+          summary: `رُفض أرشفة اليوم ${before.date} — ديالته ${round.number} محفوظة`,
+          reason: action.reason ?? "",
+          actor: action.actor ?? "manager",
+          notify: [
+            {
+              kind: "day_edited",
+              level: "warn",
+              title: "الديالة محفوظة",
+              body: `لم يُؤرشف اليوم ${before.date} لأن ديالة ${round.number} محفوظة — يلزم فك الحفظ بسبب موثّق.`,
+              personId: null,
+              dayId: action.id,
+            },
+          ],
+        });
+      }
       const next = {
         ...state,
         days: state.days.map((d) => (d.id === action.id ? { ...d, archived: action.archived } : d)),
@@ -574,9 +604,11 @@ function reducer(state: AppState, action: Action): AppState {
         action: action.archived ? "archive" : "restore",
         entity: "day",
         entityId: action.id,
-        summary: `${action.archived ? "أرشفة" : "إعادة تفعيل"} اليوم ${before?.date ?? ""}`,
+        summary: `${action.archived ? "أرشفة" : "إعادة تفعيل"} اليوم ${before.date}`,
         before,
         after: { ...before, archived: action.archived },
+        reason: action.reason ?? "",
+        actor: action.actor,
       });
     }
 
@@ -652,9 +684,91 @@ function reducer(state: AppState, action: Action): AppState {
       });
     }
 
+    case "LOCK_ROUND": {
+      const before = state.rounds.find((r) => r.id === action.id);
+      if (!before) return state;
+      const at = new Date().toISOString();
+      const daysCount = state.days.filter((d) => d.roundId === action.id && !d.archived).length;
+      const locked: DialaRound = { ...before, locked: true, lockedAt: at, lockedBy: action.actor };
+      const next = {
+        ...state,
+        rounds: state.rounds.map((r) => (r.id === action.id ? locked : r)),
+      };
+      return commit(state, next, {
+        action: "lock",
+        entity: "round",
+        entityId: action.id,
+        summary: `حفظ ديالة ${before.number} (${daysCount} يوم مسجّل من ${before.days}) — أيامها محفوظة`,
+        before,
+        after: locked,
+        actor: action.actor,
+        notify: [
+          {
+            kind: "day_edited",
+            level: "info",
+            title: `حُفظت ديالة ${before.number}`,
+            body: `حُفظت أيام الديالة (${daysCount} يوم) — لن تُحذف أو تُؤرشف إلا بفك الحفظ بسبب موثّق.`,
+            personId: null,
+            dayId: null,
+          },
+        ],
+      });
+    }
+
+    case "UNLOCK_ROUND": {
+      const before = state.rounds.find((r) => r.id === action.id);
+      if (!before) return state;
+      const unlocked: DialaRound = { ...before, locked: false, lockedAt: "", lockedBy: "" };
+      const next = {
+        ...state,
+        rounds: state.rounds.map((r) => (r.id === action.id ? unlocked : r)),
+      };
+      return commit(state, next, {
+        action: "unlock",
+        entity: "round",
+        entityId: action.id,
+        summary: `فك حفظ ديالة ${before.number} — السبب: ${action.reason || "غير محدد"}`,
+        before,
+        after: unlocked,
+        reason: action.reason,
+        actor: action.actor,
+        notify: [
+          {
+            kind: "day_edited",
+            level: "warn",
+            title: `فُك حفظ ديالة ${before.number}`,
+            body: `أصبحت أيام الديالة قابلة للتعديل والأرشفة. السبب: ${action.reason || "غير محدد"}`,
+            personId: null,
+            dayId: null,
+          },
+        ],
+      });
+    }
+
     case "ARCHIVE_ROUND": {
       const before = state.rounds.find((r) => r.id === action.id);
       if (!before) return state;
+      if (action.archived && before.locked && !action.force) {
+        // الديالة محفوظة — لا تُؤرشف بسهولة
+        return refuse(state, {
+          action: "refuse",
+          entity: "round",
+          entityId: action.id,
+          summary: `رُفض أرشفة ديالة ${before.number} — الديالة محفوظة`,
+          reason: action.reason ?? "",
+          actor: action.actor ?? "manager",
+          notify: [
+            {
+              kind: "day_edited",
+              level: "warn",
+              title: "الديالة محفوظة",
+              body: `لم تُؤرشف ديالة ${before.number} لأنها محفوظة — يجب فك الحفظ بسبب موثّق أولًا.`,
+              personId: null,
+              dayId: null,
+            },
+          ],
+        });
+      }
       const at = new Date().toISOString();
       const next = {
         ...state,
@@ -667,9 +781,13 @@ function reducer(state: AppState, action: Action): AppState {
         action: action.archived ? "archive" : "restore",
         entity: "round",
         entityId: action.id,
-        summary: `${action.archived ? "أرشفة" : "إعادة تفعيل"} ديالة ${before.number} (${before.days} يوم)`,
+        summary: `${action.archived ? "أرشفة" : "إعادة تفعيل"} ديالة ${before.number} (${before.days} يوم)${
+          action.reason ? ` — السبب: ${action.reason}` : ""
+        }`,
         before,
         after: { ...before, archived: action.archived },
+        reason: action.reason ?? "",
+        actor: action.actor,
       });
     }
 
@@ -1362,9 +1480,16 @@ export interface AppActions {
   setDayStatus: (id: string, status: DialaDay["status"], actor: string) => void;
   closeDay: (id: string, actor: string) => void;
   reopenDay: (id: string, actor: string, reason: string) => void;
-  archiveDay: (id: string, archived: boolean) => void;
+  archiveDay: (id: string, archived: boolean, opts?: { reason?: string; actor?: string; force?: boolean }) => void;
   createRound: (round: DialaRound, dates: string[]) => void;
-  archiveRound: (id: string, archived: boolean) => void;
+  /** حفظ الديالة: أيامها لا تُحذف ولا تُؤرشف إلا بفك الحفظ بسبب موثّق */
+  lockRound: (id: string, actor: string) => void;
+  unlockRound: (id: string, reason: string, actor: string) => void;
+  archiveRound: (
+    id: string,
+    archived: boolean,
+    opts?: { reason?: string; actor?: string; force?: boolean }
+  ) => void;
   saveEntry: (entry: DayEntry, isNew: boolean) => void;
   saveEntries: (dayId: string, entries: DayEntry[]) => void;
   moveEntry: (id: string, dir: -1 | 1) => void;
@@ -1498,9 +1623,11 @@ export function AppProvider({ children }: { children: ReactNode }) {
         dispatch({ type: "SET_DAY_STATUS", id, status, actor }),
       closeDay: (id, actor) => dispatch({ type: "CLOSE_DAY", id, actor }),
       reopenDay: (id, actor, reason) => dispatch({ type: "REOPEN_DAY", id, actor, reason }),
-      archiveDay: (id, archived) => dispatch({ type: "ARCHIVE_DAY", id, archived }),
+      archiveDay: (id, archived, opts) => dispatch({ type: "ARCHIVE_DAY", id, archived, ...opts }),
       createRound: (round, dates) => dispatch({ type: "CREATE_ROUND", round, dates }),
-      archiveRound: (id, archived) => dispatch({ type: "ARCHIVE_ROUND", id, archived }),
+      lockRound: (id, actor) => dispatch({ type: "LOCK_ROUND", id, actor }),
+      unlockRound: (id, reason, actor) => dispatch({ type: "UNLOCK_ROUND", id, reason, actor }),
+      archiveRound: (id, archived, opts) => dispatch({ type: "ARCHIVE_ROUND", id, archived, ...opts }),
       saveEntry: (entry, isNew) => dispatch({ type: "SAVE_ENTRY", entry, isNew }),
       saveEntries: (dayId, entries) => dispatch({ type: "SAVE_ENTRIES", dayId, entries }),
       moveEntry: (id, dir) => dispatch({ type: "MOVE_ENTRY", id, dir }),
