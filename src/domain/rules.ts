@@ -227,17 +227,73 @@ export function roundDays(state: AppState, roundId: string, includeArchived = fa
     .sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : a.dialaNumber - b.dialaNumber));
 }
 
-/** وصف اليوم: «ديالة 1 · اليوم 3» أو «يوم مستقل» */
+/** وصف اليوم: «ديالة 1 · اليوم الثالث» — لا يوجد يوم خارج الديالة */
 export function dialaDayLabel(state: AppState, day: DialaDay): string {
-  const round = findRound(state, day.roundId);
-  if (!round) return "يوم مستقل";
-  const index = roundDays(state, round.id, true).findIndex((d) => d.id === day.id) + 1;
-  return `ديالة ${round.number} · اليوم ${index > 0 ? index : 1}`;
+  const round = roundOfDay(state, day);
+  const n = dayNumberInRound(state, day);
+  return round ? `ديالة ${round.number} · اليوم ${dayOrdinal(n)}` : `اليوم ${dayOrdinal(n)} للديالة ${day.dialaNumber}`;
 }
 
-/** أيام أُنشئت مباشرة من شاشة اليوم الفعلي ولا تنتمي إلى ديالة */
-export function looseDays(state: AppState): DialaDay[] {
-  return sortedDays(state).filter((d) => !findRound(state, d.roundId));
+/** اسم اليوم بصيغة كاملة: «اليوم الثالث للديالة 2» */
+export function dialaDayTitle(state: AppState, day: DialaDay): string {
+  const round = roundOfDay(state, day);
+  const n = dayNumberInRound(state, day);
+  return `اليوم ${dayOrdinal(n)} للديالة ${round ? round.number : day.dialaNumber}`;
+}
+
+/** الأرقام الترتيبية العربية لأيام الديالة */
+const ORDINALS = [
+  "الأول",
+  "الثاني",
+  "الثالث",
+  "الرابع",
+  "الخامس",
+  "السادس",
+  "السابع",
+  "الثامن",
+  "التاسع",
+  "العاشر",
+  "الحادي عشر",
+  "الثاني عشر",
+];
+
+export function dayOrdinal(n: number): string {
+  const i = Math.round(n);
+  if (i >= 1 && i <= ORDINALS.length) return ORDINALS[i - 1];
+  return `${i}`;
+}
+
+/** الديالة التي يقع تاريخها داخل مدتها — كل يوم فعلي تنتمي إلى ديالة */
+export function roundForDate(state: AppState, date: string): DialaRound | null {
+  const rounds = state.rounds
+    .filter((r) => !r.archived)
+    .slice()
+    .sort((a, b) => (a.startDate < b.startDate ? 1 : a.startDate > b.startDate ? -1 : b.number - a.number));
+  return rounds.find((r) => r.startDate <= date && date <= r.endDate) ?? null;
+}
+
+/** الديالة التي ينتمي إليها اليوم (بالمعرّف أو بالتاريخ) */
+export function roundOfDay(state: AppState, day: DialaDay): DialaRound | null {
+  return findRound(state, day.roundId) ?? roundForDate(state, day.date);
+}
+
+/** رقم اليوم داخل الديالة (الأول، الثاني، …) */
+export function dayNumberInRound(state: AppState, day: DialaDay): number {
+  const round = roundOfDay(state, day);
+  if (!round) return 1;
+  const index = roundDates(round.startDate, round.days).indexOf(day.date);
+  if (index >= 0) return index + 1;
+  const days = roundDays(state, round.id, true)
+    .slice()
+    .sort((a, b) => (a.date < b.date ? -1 : 1));
+  const i = days.findIndex((d) => d.id === day.id);
+  return i >= 0 ? i + 1 : 1;
+}
+
+/** عدد أيام الديالة المقترح للديالة الجديدة (نفس مدة آخر ديالة) */
+export function suggestRoundDays(state: AppState): number {
+  const rounds = dialaRounds(state);
+  return rounds[0]?.days && rounds[0].days > 0 ? Math.min(rounds[0].days, 400) : 7;
 }
 
 export function entryMinutes(entry: DayEntry): number {

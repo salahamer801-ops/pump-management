@@ -10,6 +10,7 @@ import type {
   ContributorV1,
   CycleV1,
   DialaDay,
+  DialaRound,
   DayEntry,
   OtherChargeV1,
   Person,
@@ -19,7 +20,7 @@ import type {
   Transaction,
 } from "./types";
 import { addDaysISO, durationMin, isoToShort, minutesToTime, timeToMinutes, todayISO, uid } from "./util";
-import { computeUsageDraft } from "./rules";
+import { computeUsageDraft, isoRangeDays } from "./rules";
 
 export function emptyState(): AppState {
   return {
@@ -53,16 +54,85 @@ export function emptyState(): AppState {
 }
 
 /**
+ * كل يوم فعلي يجب أن ينتمي إلى ديالة (§ الديالة أم أيام المساهمة).
+ * الأيام القديمة التي أُنشئت بلا ديالة تُربط تلقائيًا: الأيام المتتابعة تُجمَّع في ديالة،
+ * ويُحفظ ترتيبها فتصبح «اليوم الأول»، «اليوم الثاني»… ولا يُحذف أي يوم.
+ */
+function linkDaysToRounds(input: AppState): Pick<AppState, "rounds" | "days" | "counters"> {
+  const rounds: DialaRound[] = [...(input.rounds ?? [])];
+  const known = new Set(rounds.map((r) => r.id));
+  const days: DialaDay[] = [...(input.days ?? [])];
+  const counters = { ...input.counters };
+  const loose = days.filter((d) => !d.roundId || !known.has(d.roundId));
+  if (loose.length === 0) return { rounds, days, counters };
+
+  const sorted = loose.slice().sort((a, b) => (a.date < b.date ? -1 : 1));
+  const groups: DialaDay[][] = [];
+  for (const d of sorted) {
+    const last = groups[groups.length - 1];
+    if (last && addDaysISO(last[last.length - 1].date, 1) === d.date) last.push(d);
+    else groups.push([d]);
+  }
+
+  let number = Math.max(counters.round || 1, 1);
+  const assign = new Map<string, { roundId: string; number: number }>();
+  for (const group of groups) {
+    const startDate = group[0].date;
+    const endDate = group[group.length - 1].date;
+    if (group.length === 1) {
+      const covering = rounds.find(
+        (r) => !r.archived && r.startDate <= startDate && startDate <= r.endDate
+      );
+      if (covering) {
+        assign.set(group[0].id, { roundId: covering.id, number: covering.number });
+        continue;
+      }
+    }
+    const round: DialaRound = {
+      id: uid("rnd"),
+      pumpId: group[0].pumpId,
+      number,
+      startDate,
+      days: Math.max(1, isoRangeDays(startDate, endDate).length),
+      endDate,
+      notes: "ديالة مرتبطة تلقائيًا من أيام مسجّلة سابقًا",
+      createdAt: new Date().toISOString(),
+      createdBy: "system",
+      archived: false,
+    };
+    rounds.push(round);
+    for (const d of group) assign.set(d.id, { roundId: round.id, number });
+    number += 1;
+  }
+
+  const maxDiala = days.reduce((m, d) => Math.max(m, d.dialaNumber || 0), counters.diala || 1);
+  return {
+    rounds,
+    days: days.map((d) => {
+      const a = assign.get(d.id);
+      return a ? { ...d, roundId: a.roundId, dialaNumber: a.number } : d;
+    }),
+    counters: {
+      round: Math.max(counters.round || 1, number),
+      diala: Math.max(maxDiala, number),
+    },
+  };
+}
+
+/**
  * تصفية الحالة المقروءة من التخزين: نضمن وجود الحقول الحديثة
- * (حالة استخدام السهم، حالة تسديد الديزل، نوع سداد الرواسة) دون حذف أي بيانات قديمة.
+ * (حالة استخدام السهم، حالة تسديد الديزل، نوع سداد الرواسة)
+ * وأن كل يوم فعلي داخل ديالة — دون حذف أي بيانات قديمة.
  */
 export function normalizeState(input: AppState): AppState {
   const base = emptyState();
+  const linked = linkDaysToRounds(input);
   return {
     ...base,
     ...input,
-    rounds: input.rounds ?? [],
-    counters: { ...base.counters, ...input.counters },
+    rounds: linked.rounds,
+    days: linked.days,
+    counters: { ...base.counters, ...input.counters, ...linked.counters },
     settings: { ...base.settings, ...input.settings },
     shareholders: (input.shareholders ?? []).map((s) => ({
       ...s,
@@ -520,10 +590,28 @@ export function seedDemo(): AppState {
     archived: false,
   });
 
+  // كل يوم فعلي داخل ديالة — الديالة أم أيام المساهمة
+  const demoRound: DialaRound = {
+    id: uid("rnd"),
+    pumpId,
+    number: 41,
+    startDate: yesterday,
+    days: 2,
+    endDate: today,
+    notes: "ديالة تدور كل يومين — يعود الدوران من اليوم الأول بعد آخر يوم",
+    createdAt: new Date().toISOString(),
+    createdBy: "manager",
+    archived: false,
+  };
+  state.rounds.push(demoRound);
+
   const dayYes = mkDay(yesterday, 41, "closed");
-  const dayToday = mkDay(today, 42, "draft");
+  const dayToday = mkDay(today, 41, "draft");
+  dayYes.roundId = demoRound.id;
+  dayToday.roundId = demoRound.id;
   state.days.push(dayYes, dayToday);
-  state.counters.diala = 43;
+  state.counters.diala = 42;
+  state.counters.round = 42;
 
   const plan = (
     day: DialaDay,

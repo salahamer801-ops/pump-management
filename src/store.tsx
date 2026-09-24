@@ -1439,15 +1439,15 @@ function loadInitial(): AppState {
     if (raw) {
       const parsed = JSON.parse(raw) as AppState;
       if (parsed && parsed.version === 2) {
-        // الحقول الحديثة تُضاف ولا تُحذف أي بيانات قائمة
+        // الحقول الحديثة تُضاف، والأيام تُربط بديالاتها، ولا تُحذف أي بيانات قائمة
         return normalizeState(parsed);
       }
-      return migrateV1(parsed);
+      return normalizeState(migrateV1(parsed));
     }
     const legacy = localStorage.getItem(LEGACY_KEY);
     if (legacy) {
       const parsed = JSON.parse(legacy);
-      const migrated = migrateV1(parsed);
+      const migrated = normalizeState(migrateV1(parsed));
       try {
         localStorage.setItem(STORAGE_KEY, JSON.stringify(migrated));
       } catch {

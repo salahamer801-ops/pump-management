@@ -11,6 +11,7 @@ import {
   Droplets,
   Fuel,
   HandCoins,
+  Layers,
   Lock,
   LockOpen,
   Pencil,
@@ -19,6 +20,7 @@ import {
   Plus,
   RefreshCcw,
   ShieldCheck,
+  Sparkles,
   Trash2,
   UserCheck,
   Users,
@@ -30,6 +32,7 @@ import type {
   Currency,
   DayEntry,
   DayStatus,
+  DialaRound,
   DieselSettlement,
   EntryRole,
   Person,
@@ -46,9 +49,11 @@ import {
   dayByDate,
   dayEntries,
   dayIssues,
+  dayOrdinal,
   daySettlementTotals,
-  dialaDayLabel,
   daySummary,
+  dialaDayLabel,
+  dialaDayTitle,
   dieselSettlementLabel,
   entryMinutes,
   findPerson,
@@ -56,8 +61,13 @@ import {
   personName,
   pumpWindow,
   royaltyModeLabel,
+  roundDates,
+  roundEndDate,
+  roundForDate,
+  roundOfDay,
   shareholderOfPerson,
   shortageAmountOf,
+  suggestRoundDays,
   usageTypeLabel,
 } from "../../domain/rules";
 import {
@@ -65,6 +75,7 @@ import {
   durationMin,
   formatDuration,
   isoToDisplay,
+  isoToShort,
   isOvernight,
   minutesToTime,
   nowTime,
@@ -154,14 +165,21 @@ export default function ActualDayScreen({
     onChangeDay(target?.id ?? null);
   };
 
-  const createDay = () => {
-    const dialaNumber = state.counters.diala;
+  /** الديالة التي يقع فيها التاريخ المختار — لا يوجد يوم خارج الديالة */
+  const dialaForDate = useMemo(() => roundForDate(state, date), [state, date]);
+  const dialaDayIndex = dialaForDate
+    ? roundDates(dialaForDate.startDate, dialaForDate.days).indexOf(date) + 1
+    : 0;
+
+  const createDay = (roundOverride?: DialaRound | null) => {
+    const round = roundOverride ?? roundForDate(state, date);
     const id = uid("day");
     actions.createDay(
       {
         id,
         pumpId: pump.id,
-        dialaNumber,
+        dialaNumber: round ? round.number : state.counters.diala,
+        roundId: round?.id ?? null,
         date,
         status: "draft",
         workStart: pump.workStart,
@@ -189,16 +207,24 @@ export default function ActualDayScreen({
     return (
       <div className="space-y-4">
         <DaySelector date={date} onChange={changeDate} />
-        <EmptyState
-          icon={<CalendarPlus size={26} />}
-          title={`لا يوجد يوم فعلي بتاريخ ${isoToDisplay(date)}`}
-          description="يمكنك إنشاء اليوم الفعلي الآن — يُبنى مبدئيًا من الجدول الأساسي ثم تعدّله بحرية كاملة كما حدث فعلًا."
-          action={
-            <Button onClick={createDay}>
-              <CalendarPlus size={18} /> إنشاء يوم فعلي
-            </Button>
-          }
-        />
+        <DialaStrip date={date} onOpenDay={onChangeDay} />
+
+        {dialaForDate ? (
+          <EmptyState
+            icon={<CalendarPlus size={26} />}
+            title={`لا يوجد يوم مسجّل بتاريخ ${isoToDisplay(date)}`}
+            description={`هذا التاريخ داخل ديالة ${dialaForDate.number} — وهو اليوم ${dayOrdinal(
+              dialaDayIndex
+            )} للديالة. يُبنى اليوم من الجدول الأساسي ثم تعدّله بحرية كما حدث فعلًا.`}
+            action={
+              <Button onClick={() => createDay(dialaForDate)}>
+                <CalendarPlus size={18} /> إنشاء اليوم {dayOrdinal(dialaDayIndex)} للديالة {dialaForDate.number}
+              </Button>
+            }
+          />
+        ) : (
+          <NewDialaCard date={date} onCreated={() => onChangeDay(null)} />
+        )}
         <ShareholdersPanel dayId={null} actor={actorName} />
       </div>
     );
@@ -207,6 +233,7 @@ export default function ActualDayScreen({
   return (
     <div className="space-y-4">
       <DaySelector date={date} onChange={changeDate} />
+      <DialaStrip date={date} dayId={day.id} onOpenDay={onChangeDay} />
 
       <Card className="p-4">
         <div className="flex items-center gap-2">
@@ -215,10 +242,10 @@ export default function ActualDayScreen({
           </div>
           <div className="flex-1">
             <div className="text-sm font-extrabold text-gray-900 dark:text-white">
-              {dialaDayLabel(state, day)} — {isoToDisplay(day.date)}
+              {dialaDayTitle(state, day)}
             </div>
             <div className="text-[11px] text-gray-400">
-              إجمالي {formatNumber(state.shareholders.filter((s) => !s.archived).length)} مساهم مسجّل ·{" "}
+              {isoToDisplay(day.date)} · {dialaDayLabel(state, day)} ·{" "}
               {day.revision > 0 ? `أُعيد فتح اليوم ${day.revision} مرة` : "لم يُعد فتحه"}
             </div>
           </div>
@@ -709,6 +736,246 @@ function DaySelector({ date, onChange }: { date: string; onChange: (d: string) =
       </button>
     </Card>
   );
+}
+
+/* ---------------------- الديالة: أم أيام المساهمة ---------------------- */
+
+const DAY_PRESETS = [3, 5, 7, 10, 15, 30];
+
+/**
+ * شريط أيام الديالة: اليوم الأول، الثاني… حتى آخر يوم.
+ * لا يوجد يوم فعلي خارج الديالة — الضغط على أي يوم يفتحه أو يُنشئه داخل ديالته.
+ */
+function DialaStrip({
+  date,
+  dayId,
+  onOpenDay,
+}: {
+  date: string;
+  dayId?: string | null;
+  onOpenDay: (id: string | null) => void;
+}) {
+  const { state, actions } = useApp();
+  const pump = state.pump!;
+  const selected = dayId ? state.days.find((d) => d.id === dayId) ?? null : null;
+  const round = selected ? roundOfDay(state, selected) : roundForDate(state, date);
+  if (!round) return null;
+
+  const dates = roundDates(round.startDate, round.days);
+  const index = dates.indexOf(date);
+
+  const openOrCreate = (target: string) => {
+    const existing = state.days.find((d) => !d.archived && d.date === target);
+    if (existing) {
+      onOpenDay(existing.id);
+      return;
+    }
+    const id = uid("day");
+    actions.createDay(
+      {
+        id,
+        pumpId: pump.id,
+        dialaNumber: round.number,
+        roundId: round.id,
+        date: target,
+        status: "draft",
+        workStart: pump.workStart,
+        workEnd: pump.workEnd,
+        capacityMin: durationMin(pump.workStart, pump.workEnd),
+        notes: "",
+        openedBy: "manager",
+        closedBy: "",
+        closedAt: "",
+        reopenedBy: "",
+        reopenedAt: "",
+        reopenReason: "",
+        revision: 0,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+        archived: false,
+      },
+      true,
+      []
+    );
+    onOpenDay(id);
+  };
+
+  return (
+    <Card className="p-3">
+      <div className="flex flex-wrap items-center gap-1.5">
+        <Layers size={15} className="text-emerald-600" />
+        <span className="text-xs font-extrabold text-gray-800 dark:text-white">ديالة {round.number}</span>
+        <Pill tone="gray">{round.days} أيام</Pill>
+        {index >= 0 ? <Pill tone="blue">اليوم {dayOrdinal(index + 1)} من الديالة</Pill> : null}
+        <span className="mr-auto text-[10px] text-gray-400">
+          {isoToShort(round.startDate)} ← {isoToShort(round.endDate)}
+        </span>
+      </div>
+
+      <div className="mt-2 flex gap-1 overflow-x-auto pb-1">
+        {dates.map((d, i) => {
+          const day = state.days.find((x) => !x.archived && x.date === d) ?? null;
+          const isActive = index === i;
+          return (
+            <button
+              key={d}
+              onClick={() => openOrCreate(d)}
+              aria-label={`اليوم ${dayOrdinal(i + 1)} للديالة ${round.number}`}
+              title={
+                day
+                  ? `اليوم ${dayOrdinal(i + 1)} للديالة ${round.number} — ${isoToDisplay(d)} (${statusLabelOf(day.status)})`
+                  : `إنشاء اليوم ${dayOrdinal(i + 1)} للديالة ${round.number} — ${isoToDisplay(d)}`
+              }
+              className={cx(
+                "min-w-[74px] shrink-0 rounded-xl border px-2 py-1.5 text-center text-[10px] font-bold transition",
+                isActive
+                  ? "border-emerald-400 bg-emerald-50 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300"
+                  : day
+                    ? dayChipTone(day.status)
+                    : "border-dashed border-gray-200 text-gray-400 dark:border-slate-600 dark:text-slate-400"
+              )}
+            >
+              <span className="block">اليوم {dayOrdinal(i + 1)}</span>
+              <span className="block text-[9px] font-normal opacity-70">{isoToShort(d)}</span>
+              <span className="block text-[9px] font-bold opacity-80">
+                {day ? statusLabelOf(day.status) : "غير مُنشأ"}
+              </span>
+            </button>
+          );
+        })}
+      </div>
+
+      <p className="mt-1.5 text-[10px] leading-relaxed text-gray-400">
+        أيام الديالة تُسمّى اليوم الأول، الثاني… حتى آخر يوم ({dayOrdinal(round.days)})، ثم يعود الدوران بديالة جديدة
+        من اليوم الأول. لا يوجد يوم فعلي خارج الديالة.
+      </p>
+    </Card>
+  );
+}
+
+/** لا توجد ديالة تغطي هذا التاريخ — نبدأ ديالة جديدة بعدد أيام يحدده المسؤول */
+function NewDialaCard({ date, onCreated }: { date: string; onCreated: () => void }) {
+  const { state, actions } = useApp();
+  const pump = state.pump!;
+  const [days, setDays] = useState(() => suggestRoundDays(state));
+  const [notes, setNotes] = useState("");
+
+  const count = Math.floor(Number(days) || 0);
+  const valid = count >= 1 && count <= 400;
+  const endDate = valid ? roundEndDate(date, count) : "";
+  const planned = useMemo(() => (valid ? roundDates(date, count) : []), [date, valid, count]);
+  const takenCount = planned.filter((d) => state.days.some((x) => !x.archived && x.date === d)).length;
+  const freshCount = planned.length - takenCount;
+
+  const create = () => {
+    if (!valid || planned.length === 0) return;
+    const round: DialaRound = {
+      id: uid("rnd"),
+      pumpId: pump.id,
+      number: state.counters.round,
+      startDate: date,
+      days: count,
+      endDate: roundEndDate(date, count),
+      notes: notes.trim(),
+      createdAt: new Date().toISOString(),
+      createdBy: "manager",
+      archived: false,
+    };
+    actions.createRound(round, planned);
+    setNotes("");
+    onCreated();
+  };
+
+  return (
+    <Card className="space-y-3 p-4">
+      <div className="flex items-center gap-2">
+        <Sparkles size={16} className="text-emerald-600" />
+        <h2 className="text-sm font-extrabold text-gray-800 dark:text-white">
+          لا توجد ديالة تغطي {isoToDisplay(date)}
+        </h2>
+      </div>
+      <p className="text-[11px] leading-relaxed text-gray-500 dark:text-slate-300">
+        كل يوم فعلي ينتمي إلى ديالة. حدّد عدد أيام الديالة الجديدة، فتُسمّى أيامها اليوم الأول، الثاني… حتى آخر يوم،
+        وبعدها يعود الدوران بديالة تالية.
+      </p>
+
+      <Field label="عدد أيام الديالة">
+        <NumberInput
+          min={1}
+          max={400}
+          value={days || ""}
+          onChange={(e) => setDays(Number(e.target.value))}
+          aria-label="عدد أيام الديالة الجديدة"
+        />
+      </Field>
+
+      <div className="flex flex-wrap gap-1.5">
+        {DAY_PRESETS.map((n) => (
+          <button
+            key={n}
+            onClick={() => setDays(n)}
+            className={cx(
+              "rounded-full border px-3 py-1 text-[11px] font-bold transition",
+              count === n
+                ? "border-emerald-400 bg-emerald-50 text-emerald-700"
+                : "border-gray-200 text-gray-500 hover:border-emerald-200 dark:border-slate-600 dark:text-slate-300"
+            )}
+          >
+            {n} أيام
+          </button>
+        ))}
+      </div>
+
+      <div className="rounded-2xl bg-emerald-50 px-3 py-2 dark:bg-emerald-900/30">
+        <div className="text-[11px] font-bold text-emerald-600 dark:text-emerald-300">
+          تاريخ نهاية الديالة (محسوب)
+        </div>
+        <div className="text-sm font-black text-emerald-800 dark:text-emerald-200">
+          {endDate ? isoToDisplay(endDate) : "—"}
+        </div>
+        <div className="text-[10px] text-emerald-700 dark:text-emerald-300">
+          {valid ? `الديالة ${state.counters.round}: ${count} يوم — من اليوم الأول إلى اليوم ${dayOrdinal(count)}` : "أدخل عدد أيام صحيح"}
+        </div>
+      </div>
+
+      <Field label="ملاحظات الديالة (اختياري)">
+        <TextInput value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="مثال: الدورة الصيفية" />
+      </Field>
+
+      <Button className="w-full" onClick={create} disabled={!valid || freshCount === 0}>
+        <CalendarPlus size={18} /> بدء الديالة {state.counters.round} من هذا اليوم ({freshCount} يوم)
+      </Button>
+    </Card>
+  );
+}
+
+function statusLabelOf(status: string): string {
+  const map: Record<string, string> = {
+    scheduled: "مجدول",
+    draft: "مسودة",
+    in_progress: "جارٍ التنفيذ",
+    completed: "مكتمل",
+    closed: "مغلق",
+    revised: "معدّل",
+  };
+  return map[status] ?? status;
+}
+
+function dayChipTone(status: string): string {
+  const map: Record<string, string> = {
+    scheduled: "border-gray-200 bg-gray-50 text-gray-500 dark:border-slate-600 dark:bg-slate-700 dark:text-slate-300",
+    draft:
+      "border-amber-200 bg-amber-50 text-amber-700 dark:border-amber-900/40 dark:bg-amber-900/20 dark:text-amber-300",
+    in_progress:
+      "border-sky-200 bg-sky-50 text-sky-700 dark:border-sky-900/40 dark:bg-sky-900/20 dark:text-sky-300",
+    completed:
+      "border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-900/40 dark:bg-emerald-900/20 dark:text-emerald-300",
+    closed:
+      "border-emerald-300 bg-emerald-100 text-emerald-800 dark:border-emerald-800 dark:bg-emerald-900/40 dark:text-emerald-200",
+    revised:
+      "border-amber-300 bg-amber-100 text-amber-800 dark:border-amber-800 dark:bg-amber-900/40 dark:text-amber-200",
+  };
+  return map[status] ?? map.scheduled;
 }
 
 /* ----------------------- صف المستخدم + خيارات التسديد ------------------- */
