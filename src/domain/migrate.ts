@@ -28,6 +28,7 @@ export function emptyState(): AppState {
     persons: [],
     shareholders: [],
     rights: [],
+    rounds: [],
     days: [],
     entries: [],
     usages: [],
@@ -47,7 +48,7 @@ export function emptyState(): AppState {
       deviceId: uid("dev"),
       lastSyncAt: "",
     },
-    counters: { diala: 1 },
+    counters: { diala: 1, round: 1 },
   };
 }
 

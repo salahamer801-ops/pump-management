@@ -16,6 +16,7 @@ import type { Settlement, Transaction } from "../../domain/types";
 import {
   comparePerson,
   daySummary,
+  dialaDayLabel,
   findPerson,
   matchStatusLabel,
   personName,
@@ -194,7 +195,7 @@ function MonthlyReport({ month }: { month: string }) {
                   className="flex items-center gap-2 rounded-2xl border border-gray-100 px-3 py-2 text-[11px] dark:border-slate-700"
                 >
                   <span className="flex-1 font-bold text-gray-800 dark:text-white">
-                    ديالة {day.dialaNumber} — {isoToShort(day.date)}
+                    {dialaDayLabel(state, day)} — {isoToShort(day.date)}
                   </span>
                   <span className="text-gray-500 dark:text-slate-300">{s.persons} شخص</span>
                   <span className="text-gray-500 dark:text-slate-300">{formatDuration(s.plannedMin)}</span>

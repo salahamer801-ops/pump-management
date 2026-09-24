@@ -13,6 +13,7 @@ import type {
   AuditLog,
   ConflictAck,
   DialaDay,
+  DialaRound,
   DayEntry,
   FuelRecord,
   MatchStatus,
@@ -29,7 +30,7 @@ import type {
   Transaction,
   UsageType,
 } from "./domain/types";
-import { durationMin, nowTime, todayISO, uid } from "./domain/util";
+import { durationMin, isoToShort, nowTime, todayISO, uid } from "./domain/util";
 import { computeUsageDraft, dayEntries as entriesOfDay, findPerson, personBalance, planEntriesFromSchedule } from "./domain/rules";
 import { emptyState, migrateV1, seedDemo } from "./domain/migrate";
 import { LEGACY_MANAGER_STORAGE_KEY as LEGACY_KEY, MANAGER_STORAGE_KEY as STORAGE_KEY } from "./domain/storage";
@@ -57,6 +58,8 @@ export type Action =
   | { type: "CLOSE_DAY"; id: string; actor: string }
   | { type: "REOPEN_DAY"; id: string; actor: string; reason: string }
   | { type: "ARCHIVE_DAY"; id: string; archived: boolean }
+  | { type: "CREATE_ROUND"; round: DialaRound; dates: string[] }
+  | { type: "ARCHIVE_ROUND"; id: string; archived: boolean }
   | { type: "SAVE_ENTRY"; entry: DayEntry; isNew: boolean }
   | { type: "SAVE_ENTRIES"; dayId: string; entries: DayEntry[] }
   | { type: "MOVE_ENTRY"; id: string; dir: -1 | 1 }
@@ -411,14 +414,14 @@ function reducer(state: AppState, action: Action): AppState {
         action: "create",
         entity: "day",
         entityId: action.day.id,
-        summary: `إنشاء يوم فعلي رقم ${action.day.dialaNumber} بتاريخ ${action.day.date} (${entries.length} شخص)`,
+        summary: `إنشاء يوم فعلي بتاريخ ${action.day.date} (${entries.length} شخص)`,
         after: action.day,
         op: "create",
         notify: [
           {
             kind: "day_edited",
             level: "info",
-            title: `يوم جديد — ديالة ${action.day.dialaNumber}`,
+            title: "يوم جديد",
             body: `أُنشئ يوم ${action.day.date} بـ ${entries.length} مشاركًا.`,
             personId: null,
             dayId: action.day.id,
@@ -548,6 +551,99 @@ function reducer(state: AppState, action: Action): AppState {
         entity: "day",
         entityId: action.id,
         summary: `${action.archived ? "أرشفة" : "إعادة تفعيل"} اليوم ${before?.date ?? ""}`,
+        before,
+        after: { ...before, archived: action.archived },
+      });
+    }
+
+    /* ------------------------- الديالات (الدورات) --------------------- */
+    case "CREATE_ROUND": {
+      if (!state.pump) return state;
+      const pump = state.pump;
+      const capacityMin = durationMin(pump.workStart, pump.workEnd);
+      const busy = new Set(state.days.filter((d) => !d.archived).map((d) => d.date));
+      const fresh = action.dates.filter((date) => !busy.has(date));
+      let number = state.counters.diala;
+      const newDays: DialaDay[] = [];
+      const newEntries: DayEntry[] = [];
+      for (const date of fresh) {
+        const day: DialaDay = {
+          id: uid("day"),
+          pumpId: pump.id,
+          dialaNumber: number,
+          roundId: action.round.id,
+          date,
+          status: "scheduled",
+          workStart: pump.workStart,
+          workEnd: pump.workEnd,
+          capacityMin,
+          notes: "",
+          openedBy: "manager",
+          closedBy: "",
+          closedAt: "",
+          reopenedBy: "",
+          reopenedAt: "",
+          reopenReason: "",
+          revision: 0,
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+          archived: false,
+        };
+        newDays.push(day);
+        number += 1;
+        newEntries.push(
+          ...planEntriesFromSchedule(state, pump, day.workStart, day.workEnd).map(
+            (e) => ({ ...e, dayId: day.id, id: uid("en") }) as DayEntry
+          )
+        );
+      }
+      const round: DialaRound = { ...action.round };
+      const next = {
+        ...state,
+        rounds: [...state.rounds, round],
+        days: [...state.days, ...newDays],
+        entries: [...state.entries, ...newEntries],
+        counters: {
+          diala: Math.max(number, state.counters.diala),
+          round: Math.max(state.counters.round, round.number + 1),
+        },
+      };
+      return commit(state, next, {
+        action: "create",
+        entity: "round",
+        entityId: round.id,
+        summary: `إنشاء ديالة ${round.number}: من ${round.startDate} إلى ${round.endDate} (${round.days} يوم، أُنشئ ${newDays.length} يوم)`,
+        after: round,
+        op: "create",
+        notify: [
+          {
+            kind: "day_edited",
+            level: "info",
+            title: `ديالة ${round.number} جديدة`,
+            body: `من ${isoToShort(round.startDate)} إلى ${isoToShort(round.endDate)} — ${round.days} يوم، وأُنشئ ${newDays.length} يوم للعمل.`,
+            personId: null,
+            dayId: null,
+          },
+        ],
+      });
+    }
+
+    case "ARCHIVE_ROUND": {
+      const before = state.rounds.find((r) => r.id === action.id);
+      if (!before) return state;
+      const at = new Date().toISOString();
+      const next = {
+        ...state,
+        rounds: state.rounds.map((r) => (r.id === action.id ? { ...r, archived: action.archived } : r)),
+        days: state.days.map((d) =>
+          d.roundId === action.id ? { ...d, archived: action.archived, updatedAt: at } : d
+        ),
+      };
+      return commit(state, next, {
+        action: action.archived ? "archive" : "restore",
+        entity: "round",
+        entityId: action.id,
+        summary: `${action.archived ? "أرشفة" : "إعادة تفعيل"} ديالة ${before.number} (${before.days} يوم)`,
         before,
         after: { ...before, archived: action.archived },
       });
@@ -1172,6 +1268,8 @@ export interface AppActions {
   closeDay: (id: string, actor: string) => void;
   reopenDay: (id: string, actor: string, reason: string) => void;
   archiveDay: (id: string, archived: boolean) => void;
+  createRound: (round: DialaRound, dates: string[]) => void;
+  archiveRound: (id: string, archived: boolean) => void;
   saveEntry: (entry: DayEntry, isNew: boolean) => void;
   saveEntries: (dayId: string, entries: DayEntry[]) => void;
   moveEntry: (id: string, dir: -1 | 1) => void;
@@ -1232,7 +1330,14 @@ function loadInitial(): AppState {
     if (raw) {
       const parsed = JSON.parse(raw) as AppState;
       if (parsed && parsed.version === 2) {
-        return { ...emptyState(), ...parsed, settings: { ...emptyState().settings, ...parsed.settings } };
+        const base = emptyState();
+        return {
+          ...base,
+          ...parsed,
+          rounds: parsed.rounds ?? [],
+          counters: { ...base.counters, ...parsed.counters },
+          settings: { ...base.settings, ...parsed.settings },
+        };
       }
       return migrateV1(parsed);
     }
@@ -1291,6 +1396,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
       closeDay: (id, actor) => dispatch({ type: "CLOSE_DAY", id, actor }),
       reopenDay: (id, actor, reason) => dispatch({ type: "REOPEN_DAY", id, actor, reason }),
       archiveDay: (id, archived) => dispatch({ type: "ARCHIVE_DAY", id, archived }),
+      createRound: (round, dates) => dispatch({ type: "CREATE_ROUND", round, dates }),
+      archiveRound: (id, archived) => dispatch({ type: "ARCHIVE_ROUND", id, archived }),
       saveEntry: (entry, isNew) => dispatch({ type: "SAVE_ENTRY", entry, isNew }),
       saveEntries: (dayId, entries) => dispatch({ type: "SAVE_ENTRIES", dayId, entries }),
       moveEntry: (id, dir) => dispatch({ type: "MOVE_ENTRY", id, dir }),

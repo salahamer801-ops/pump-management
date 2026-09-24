@@ -21,6 +21,7 @@ import {
   currentDialaDay,
   dayEntries,
   daySummary,
+  dialaDayLabel,
   debtors,
   nextDialaDay,
   openIssues,
@@ -129,10 +130,10 @@ export default function Dashboard({
 
           {stats.current ? (
             <div className="mt-4">
-              <div className="text-xs text-emerald-50">الديالة الحالية</div>
+              <div className="text-xs text-emerald-50">اليوم الحالي</div>
               <div className="flex items-end justify-between">
                 <div className="text-2xl font-black">
-                  ديالة {stats.current.dialaNumber}
+                  {dialaDayLabel(state, stats.current)}
                   {currentSummary ? ` · ${currentSummary.persons} شخص` : ""}
                 </div>
                 <div className="text-left text-xs">
@@ -155,7 +156,7 @@ export default function Dashboard({
                   variant="ghost"
                   onClick={() => onGoTab("diala")}
                 >
-                  <CalendarPlus size={16} /> يوم جديد
+                  <CalendarPlus size={16} /> ديالة جديدة
                 </Button>
               </div>
             </div>
@@ -163,7 +164,7 @@ export default function Dashboard({
             <div className="mt-4">
               <p className="text-sm text-emerald-50">لا يوجد يوم فعلي مسجّل بعد.</p>
               <Button className="mt-3 bg-white text-emerald-700" variant="ghost" onClick={() => onGoTab("diala")}>
-                <CalendarPlus size={16} /> إنشاء يوم فعلي
+                <CalendarPlus size={16} /> إضافة ديالة
               </Button>
             </div>
           )}
@@ -176,9 +177,9 @@ export default function Dashboard({
             <CalendarClock size={18} />
           </div>
           <div className="flex-1">
-            <div className="text-xs font-bold text-gray-400">الديالة القادمة</div>
+            <div className="text-xs font-bold text-gray-400">اليوم القادم</div>
             <div className="text-sm font-extrabold text-gray-800 dark:text-white">
-              ديالة {stats.next.dialaNumber} — {isoToShort(stats.next.date)}
+              {dialaDayLabel(state, stats.next)} — {isoToShort(stats.next.date)}
             </div>
           </div>
           <button
@@ -370,7 +371,7 @@ export default function Dashboard({
                   >
                     <div className="flex-1">
                       <div className="text-xs font-extrabold text-gray-800 dark:text-white">
-                        ديالة {day.dialaNumber} — {isoToShort(day.date)}
+                        {dialaDayLabel(state, day)} — {isoToShort(day.date)}
                       </div>
                       <div className="truncate text-[11px] text-gray-400">{holders || "—"}</div>
                     </div>

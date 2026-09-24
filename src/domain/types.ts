@@ -127,10 +127,33 @@ export type DayStatus =
   | "closed"
   | "revised";
 
+/**
+ * الديالة — دورة/مرحلة دوران لها يوم بداية وعدد أيام،
+ * وتاريخ النهاية يُحسب من عدد الأيام المُدخل.
+ */
+export interface DialaRound {
+  id: ID;
+  pumpId: ID;
+  /** رقم الديالة المتسلسل */
+  number: number;
+  /** YYYY-MM-DD — يوم بداية الديالة */
+  startDate: string;
+  /** عدد أيام الديالة كما أدخلها المستخدم */
+  days: number;
+  /** YYYY-MM-DD — يُحسب: البداية + (عدد الأيام − 1) */
+  endDate: string;
+  notes: string;
+  createdAt: string;
+  createdBy: string;
+  archived: boolean;
+}
+
 export interface DialaDay {
   id: ID;
   pumpId: ID;
   dialaNumber: number;
+  /** الديالة (الدورة) التي ينتمي إليها هذا اليوم — إن وُجدت */
+  roundId?: ID | null;
   /** YYYY-MM-DD */
   date: string;
   status: DayStatus;
@@ -534,6 +557,7 @@ export interface AppState {
   persons: Person[];
   shareholders: Shareholder[];
   rights: ShareRight[];
+  rounds: DialaRound[];
   days: DialaDay[];
   entries: DayEntry[];
   usages: ActualUsage[];
@@ -548,5 +572,5 @@ export interface AppState {
   auditLogs: AuditLog[];
   syncQueue: SyncItem[];
   settings: AppSettings;
-  counters: { diala: number };
+  counters: { diala: number; round: number };
 }

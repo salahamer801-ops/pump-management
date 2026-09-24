@@ -37,6 +37,7 @@ import {
   dayByDate,
   dayEntries,
   dayIssues,
+  dialaDayLabel,
   daySummary,
   entryMinutes,
   findPerson,
@@ -186,7 +187,7 @@ export default function ActualDayScreen({
           </div>
           <div className="flex-1">
             <div className="text-sm font-extrabold text-gray-900 dark:text-white">
-              ديالة {day.dialaNumber} — {isoToDisplay(day.date)}
+              {dialaDayLabel(state, day)} — {isoToDisplay(day.date)}
             </div>
             <div className="text-[11px] text-gray-400">
               إجمالي {formatNumber(state.shareholders.filter((s) => !s.archived).length)} مساهم مسجّل ·{" "}

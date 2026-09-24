@@ -9,6 +9,7 @@ import type {
   DayEntry,
   DayIssueSeverity,
   DialaDay,
+  DialaRound,
   Person,
   Pump,
   Shareholder,
@@ -182,6 +183,56 @@ export function nextDialaDay(state: AppState): DialaDay | null {
     .filter((d) => d.date > today)
     .sort((a, b) => (a.date < b.date ? -1 : 1));
   return future[0] ?? null;
+}
+
+/* ------------------------------- الديالات ------------------------------- */
+
+/** تاريخ نهاية الديالة = يوم البداية + (عدد الأيام − 1) */
+export function roundEndDate(startDate: string, days: number): string {
+  const count = clamp(Math.floor(days || 1), 1, 400);
+  return addDaysISO(startDate, count - 1);
+}
+
+/** كل تواريخ الديالة من تاريخ البداية وعدد الأيام */
+export function roundDates(startDate: string, days: number): string[] {
+  const count = clamp(Math.floor(days || 1), 1, 400);
+  return isoRangeDays(startDate, addDaysISO(startDate, count - 1));
+}
+
+/** الديالات المسجّلة — الأحدث بدايةً أولًا */
+export function dialaRounds(state: AppState, includeArchived = false): DialaRound[] {
+  return state.rounds
+    .filter((r) => includeArchived || !r.archived)
+    .slice()
+    .sort((a, b) =>
+      a.startDate < b.startDate ? 1 : a.startDate > b.startDate ? -1 : b.number - a.number
+    );
+}
+
+export function findRound(state: AppState, id?: string | null): DialaRound | null {
+  if (!id) return null;
+  return state.rounds.find((r) => r.id === id) ?? null;
+}
+
+/** أيام الديالة مرتّبة من اليوم الأول إلى الأخير */
+export function roundDays(state: AppState, roundId: string, includeArchived = false): DialaDay[] {
+  return state.days
+    .filter((d) => d.roundId === roundId && (includeArchived || !d.archived))
+    .slice()
+    .sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : a.dialaNumber - b.dialaNumber));
+}
+
+/** وصف اليوم: «ديالة 1 · اليوم 3» أو «يوم مستقل» */
+export function dialaDayLabel(state: AppState, day: DialaDay): string {
+  const round = findRound(state, day.roundId);
+  if (!round) return "يوم مستقل";
+  const index = roundDays(state, round.id, true).findIndex((d) => d.id === day.id) + 1;
+  return `ديالة ${round.number} · اليوم ${index > 0 ? index : 1}`;
+}
+
+/** أيام أُنشئت مباشرة من شاشة اليوم الفعلي ولا تنتمي إلى ديالة */
+export function looseDays(state: AppState): DialaDay[] {
+  return sortedDays(state).filter((d) => !findRound(state, d.roundId));
 }
 
 export function entryMinutes(entry: DayEntry): number {
