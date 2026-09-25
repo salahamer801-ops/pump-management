@@ -44,6 +44,14 @@ function Root() {
     setAuthChecked(true);
   }, []);
 
+  /**
+   * نجاح الدخول الحسابي الحقيقي يغلق بوابة الدخول فورًا ليدخل صاحب الحساب
+   * إلى تطبيقه: تطبيق المسؤول أو تطبيق المستخدم (مساهم) حسب نوع الحساب.
+   */
+  useEffect(() => {
+    if (serverSession) setServerLoginOpen(false);
+  }, [serverSession]);
+
   const handleLogin = (s: AuthSession) => setSession(s);
   const handleLogout = () => {
     if (session) logoutUser(session.userId);

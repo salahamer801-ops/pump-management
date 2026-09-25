@@ -11,6 +11,7 @@ import {
   ShieldCheck,
   Sun,
   UserRound,
+  History,
 } from "lucide-react";
 import { useShareholder } from "../store";
 import { tr } from "../i18n";
@@ -20,9 +21,11 @@ import {
   Button,
   Card,
   Field,
+  Pill,
   TextArea,
   TextInput,
 } from "../../components/ui";
+import { formatDateTime } from "../../format";
 
 export default function SettingsScreen({ onLogout }: { onLogout: () => void }) {
   const { state, actions } = useShareholder();
@@ -196,6 +199,63 @@ export default function SettingsScreen({ onLogout }: { onLogout: () => void }) {
             </p>
           </div>
         </div>
+      </Card>
+
+      {/* سجل التغييرات: كل تغيير يُسجَّل، والحذف ناعم (لا يُحذف أي سجل) */}
+      <Card className="p-5">
+        <SectionTitle
+          icon={<History size={18} />}
+          title={t("سجل التغييرات", "Change log")}
+          subtitle={t("كل إضافة أو تعديل أو إزالة تُسجَّل هنا", "Every add, edit and removal is recorded")}
+        />
+        {state.history.length === 0 ? (
+          <p className="mt-3 text-xs text-gray-400 dark:text-slate-400">
+            {t("لا توجد تغييرات مسجّلة بعد.", "No changes recorded yet.")}
+          </p>
+        ) : (
+          <div className="mt-3 max-h-80 space-y-1.5 overflow-y-auto" data-testid="user-history">
+            {state.history.slice(0, 60).map((h) => (
+              <div
+                key={h.id}
+                className="rounded-2xl bg-gray-50 px-3 py-2 dark:bg-slate-700"
+              >
+                <div className="flex items-start gap-2">
+                  <Pill
+                    tone={
+                      h.kind === "archive"
+                        ? "amber"
+                        : h.kind === "create"
+                          ? "green"
+                          : h.kind === "data"
+                            ? "blue"
+                            : "gray"
+                    }
+                  >
+                    {h.kind === "archive"
+                      ? t("إزالة", "Removed")
+                      : h.kind === "create"
+                        ? t("إضافة", "Added")
+                        : h.kind === "data"
+                          ? t("بيانات", "Data")
+                          : h.kind === "settings"
+                            ? t("إعداد", "Setting")
+                            : t("تعديل", "Edit")}
+                  </Pill>
+                  <span className="flex-1 text-[11px] font-bold leading-relaxed text-gray-700 dark:text-slate-200">
+                    {h.text}
+                  </span>
+                </div>
+                <div className="mt-1 text-[10px] text-gray-400">{formatDateTime(h.at)}</div>
+              </div>
+            ))}
+          </div>
+        )}
+        <p className="mt-3 rounded-2xl bg-emerald-50 px-3 py-2 text-[10px] leading-relaxed text-emerald-800 dark:bg-emerald-900/20 dark:text-emerald-300">
+          {t(
+            "الحذف هنا ناعم: السجل يبقى محفوظًا مع سبب الإزالة ووقته ولا يُحذف نهائيًا.",
+            "Deletion here is soft: records stay stored with the reason and time."
+          )}
+        </p>
       </Card>
 
       {/* الخروج */}

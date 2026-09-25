@@ -14,10 +14,22 @@ export interface ShareholderPump {
   createdAt: string;
 }
 
+/**
+ * حقول الحذف الناعم وسجل التغيير — يُستخدمان في السجلات الشخصية للمستخدم:
+ * لا يُحذف أي سجل أبدًا، بل يُؤرشف بسبب موثّق ويُسجَّل في سجل التغييرات.
+ */
+export interface Auditable {
+  archived?: boolean;
+  updatedAt?: string;
+  deletedAt?: string;
+  deletedBy?: string;
+  deletionReason?: string;
+}
+
 export type LendDirection = "lend" | "borrow"; // سلفت / تسلفت
 export type LendUnit = "hour" | "cycle"; // ساعة / دور كامل
 
-export interface ShareholderTurn {
+export interface ShareholderTurn extends Auditable {
   id: string;
   cycleId: string;
   pumpId: string;
@@ -49,7 +61,7 @@ export interface ShareholderCycle {
 
 export type DayShareType = "owned" | "purchase" | "loan"; // ملك / شراء / سلف
 
-export interface DayContributor {
+export interface DayContributor extends Auditable {
   id: string;
   cycleId: string;
   pumpId: string;
@@ -69,6 +81,8 @@ export interface ShareholderEntry {
   id: string;
   at: string;
   text: string;
+  /** نوع التغيير — للعرض والتصفية في سجل التغييرات */
+  kind?: "create" | "update" | "archive" | "restore" | "settings" | "data";
 }
 
 export interface ShareholderProfile {

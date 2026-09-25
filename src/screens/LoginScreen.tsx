@@ -67,7 +67,8 @@ export default function LoginScreen() {
       {tab === "register" ? (
         <RegisterForm
           onDone={() => {
-            setNotice("");
+            /* رد واضح بعد إنشاء الحساب: لا يبدو الزر كأنه لم يستجب */
+            setNotice("تم إنشاء الحساب بنجاح — سجّل الدخول الآن برقم هاتفك وكلمة المرور.");
             setTab("login");
           }}
         />

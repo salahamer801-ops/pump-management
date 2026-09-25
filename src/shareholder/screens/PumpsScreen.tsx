@@ -96,7 +96,7 @@ export default function PumpsScreen() {
     <div className="space-y-4">
       <div className="flex items-center justify-between">
         <h1 className="text-xl font-black text-gray-900">المضخات</h1>
-        <Button onClick={openAdd} className="px-4 py-2.5">
+        <Button onClick={openAdd} className="px-4 py-2.5" data-testid="open-pump-form">
           <Plus size={18} /> إضافة مضخة
         </Button>
       </div>

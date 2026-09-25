@@ -5,16 +5,27 @@ import {
   ClipboardCheck,
   Droplets,
   Link2,
+  ListOrdered,
+  Lock,
   Plus,
   Scale,
   Search,
   UserRound,
+  Users,
 } from "lucide-react";
 import { useShareholder } from "../store";
 import { useAuth } from "../../auth/AuthProvider";
 import type { ShareholderTurn } from "../types";
 import type { AppState, Person, PersonalRecord } from "../../domain/types";
 import { appendPersonalRecord, readManagerState, readUserLink, saveUserLink } from "../../domain/storage";
+import {
+  baseRosterCapacityMin,
+  baseRosterTimeline,
+  baseRosterTotalMin,
+  dayEntries,
+  dayNumberInRound,
+  dayOrdinal,
+} from "../../domain/rules";
 import { durationMin, formatDuration, minutesToTime, timeToMinutes, todayISO, uid } from "../../domain/util";
 import { formatMoney, formatNumber } from "../../format";
 import { Button, Card, Field, Modal, NumberInput, Pill, StatCard, TextArea, TextInput, TimeInput, cx } from "../../components/ui";
@@ -26,7 +37,11 @@ import { Button, Card, Field, Modal, NumberInput, Pill, StatCard, TextArea, Text
 export default function OfficialScreen() {
   const { actions } = useShareholder();
   const { session } = useAuth();
-  const [manager, setManager] = useState<AppState | null>(() => readManagerState());
+  /** قراءة السجل الرسمي: مضخة العضوية المعتمدة أولًا، ثم أي مضخة محفوظة في الجهاز */
+  const linkedPumpId =
+    (session?.memberships ?? []).find((m) => m.status === "approved")?.pumpId ?? null;
+  const loadManager = () => readManagerState(linkedPumpId);
+  const [manager, setManager] = useState<AppState | null>(() => loadManager());
 
   /* ارتباط الحساب بالشخص يأتي من موافقة المسؤول على الخادم (§21، §34) */
   const approvedLink = useMemo(
@@ -39,10 +54,14 @@ export default function OfficialScreen() {
   const [linkOpen, setLinkOpen] = useState(false);
   const [query, setQuery] = useState("");
   const [recordOpen, setRecordOpen] = useState(false);
+  /** عرض كشف الديالة وقائمة الدوام الفعلي (مطويان افتراضيًا) */
+  const [showBase, setShowBase] = useState(false);
+  const [showActual, setShowActual] = useState(false);
 
   useEffect(() => {
-    setManager(readManagerState());
-  }, []);
+    setManager(loadManager());
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [linkedPumpId]);
 
   const pump = manager?.pump ?? null;
   const currency = pump?.currency ?? "YER";
@@ -97,6 +116,54 @@ export default function OfficialScreen() {
 
     return { upcoming, usages, totals, personal, rights, shareholder, balance, compare };
   }, [manager, personId, pump?.id]);
+
+  /**
+   * قسم الدوام الأساسي: نصيبي في كشف ديالتي — اسمي وترتيبي ووقتي المتوقع،
+   * ومجموع الكشف مقابل ساعات تشغيل الدوام الأساسي. قراءة من بيانات المسؤول.
+   */
+  const baseInfo = useMemo(() => {
+    if (!manager || !pump || !personId) return null;
+    const round =
+      manager.rounds
+        .filter((r) => !r.archived)
+        .slice()
+        .sort((a, b) => b.number - a.number)[0] ?? null;
+    if (!round) return { round: null as null, rows: [], mine: null, total: 0, capacity: baseRosterCapacityMin(pump) };
+    const rows = baseRosterTimeline(manager, pump, round.id);
+    const mine = rows.find((r) => r.personId === personId) ?? null;
+    return {
+      round,
+      rows,
+      mine,
+      total: baseRosterTotalMin(manager, round.id),
+      capacity: baseRosterCapacityMin(pump),
+    };
+  }, [manager, pump, personId]);
+
+  /**
+   * قسم الدوام الفعلي: اليوم (أو أقرب يوم مسجّل) — موقفي في قائمة من أخذ ماءه،
+   * وكم شخصًا قبل وبعدي، ومن أكمل دورته. قراءة فقط من بيانات المسؤول.
+   */
+  const actualInfo = useMemo(() => {
+    if (!manager || !pump) return null;
+    const days = manager.days.filter((d) => !d.archived);
+    if (days.length === 0) return null;
+    const today = todayISO();
+    const day =
+      days.find((d) => d.date === today) ??
+      days.slice().sort((a, b) => (a.date < b.date ? 1 : -1))[0];
+    const rows = dayEntries(manager, day.id);
+    const index = rows.findIndex((e) => e.personId === personId || e.actualPersonId === personId);
+    return {
+      day,
+      rows,
+      mine: index >= 0 ? rows[index] : null,
+      myIndex: index,
+      before: index > 0 ? index : 0,
+      done: rows.filter((e) => e.status === "done" || Boolean(e.usageId)).length,
+      isToday: day.date === today,
+    };
+  }, [manager, pump, personId]);
 
   if (!manager || !pump) {
     return (
@@ -216,6 +283,205 @@ export default function OfficialScreen() {
                   </div>
                 ))}
               </div>
+            )}
+          </Card>
+
+          {/* 1) الدوام الأساسي — كشف الديالة: نصيبي وترتيبي */}
+          <Card className="p-4" data-testid="user-base-shift">
+            <div className="mb-2 flex flex-wrap items-center gap-2">
+              <ListOrdered size={16} className="text-emerald-600" />
+              <h2 className="text-sm font-extrabold text-gray-800 dark:text-white">
+                الدوام الأساسي — كشف {baseInfo?.round ? `ديالة ${baseInfo.round.number}` : "الديالة"}
+              </h2>
+              {baseInfo?.round?.rosterLocked ? (
+                <Pill tone="green" className="mr-auto">
+                  <Lock size={10} /> مثبَّت
+                </Pill>
+              ) : null}
+            </div>
+            {!baseInfo?.round ? (
+              <p className="text-xs text-gray-400">لم يبدأ المسؤول ديالة بعد.</p>
+            ) : baseInfo.rows.length === 0 ? (
+              <p className="text-xs leading-relaxed text-gray-400">
+                لم يسجّل المسؤول أسماء الدوام الأساسي لهذه الديالة بعد.
+              </p>
+            ) : (
+              <>
+                <div className="rounded-2xl bg-emerald-50 px-3 py-3 dark:bg-emerald-900/20">
+                  {baseInfo.mine ? (
+                    <>
+                      <div className="flex flex-wrap items-center gap-2 text-[11px] font-bold text-emerald-900 dark:text-emerald-200">
+                        <span>
+                          نصيبي: {formatDuration(baseInfo.mine.shareMin)}
+                        </span>
+                        <span className="text-emerald-700/70 dark:text-emerald-300/70">
+                          · ترتيبي {baseInfo.mine.order + 1} من {baseInfo.rows.length}
+                        </span>
+                      </div>
+                      <div className="mt-1 text-[11px] text-emerald-800/80 dark:text-emerald-300/80">
+                        وقتي في الكشف: {baseInfo.mine.startTime} → {baseInfo.mine.endTime} · قبلي{" "}
+                        {baseInfo.mine.order} مساهمًا
+                      </div>
+                    </>
+                  ) : (
+                    <p className="text-[11px] font-bold text-amber-800 dark:text-amber-300">
+                      اسمك ليس في كشف الدوام الأساسي لهذه الديالة — راجع المسؤول إن كان لك نصيب.
+                    </p>
+                  )}
+                </div>
+                <div className="mt-2 flex flex-wrap items-center justify-between gap-2 text-[10px] text-gray-500 dark:text-slate-300">
+                  <span>
+                    كشف الديالة: {baseInfo.rows.length} مساهمًا · {formatDuration(baseInfo.total)} من{" "}
+                    {formatDuration(baseInfo.capacity)} ساعة تشغيل
+                  </span>
+                  {myData?.shareholder ? (
+                    <span>
+                      سهمي: {formatNumber(myData.shareholder.units)} {pump.shareUnit}
+                    </span>
+                  ) : null}
+                </div>
+                <button
+                  className="mt-2 text-[11px] font-bold text-emerald-700 dark:text-emerald-300"
+                  onClick={() => setShowBase(!showBase)}
+                  data-testid="user-base-toggle"
+                >
+                  {showBase ? "إخفاء الكشف" : `عرض الكشف كاملًا (${baseInfo.rows.length})`}
+                </button>
+                {showBase ? (
+                  <div className="mt-2 max-h-72 space-y-1 overflow-y-auto">
+                    {baseInfo.rows.map((row) => (
+                      <div
+                        key={row.member.id}
+                        className={cx(
+                          "flex items-center gap-2 rounded-xl px-3 py-1.5 text-[11px]",
+                          row.personId === personId
+                            ? "bg-emerald-100 font-extrabold text-emerald-900 dark:bg-emerald-900/40 dark:text-emerald-200"
+                            : "bg-gray-50 text-gray-700 dark:bg-slate-700 dark:text-slate-200"
+                        )}
+                      >
+                        <span className="w-6 shrink-0 text-center font-black">{row.order + 1}</span>
+                        <span className="min-w-0 flex-1 truncate">
+                          {row.personId === personId ? "أنا — " : ""}
+                          {row.name}
+                        </span>
+                        <span className="text-gray-400">
+                          {row.startTime} → {row.endTime}
+                        </span>
+                        <span className="font-bold">{formatDuration(row.shareMin)}</span>
+                      </div>
+                    ))}
+                  </div>
+                ) : null}
+              </>
+            )}
+          </Card>
+
+          {/* 2) الدوام الفعلي — من أخذ ماءه في هذا اليوم */}
+          <Card className="p-4" data-testid="user-actual-shift">
+            <div className="mb-2 flex flex-wrap items-center gap-2">
+              <Users size={16} className="text-emerald-600" />
+              <h2 className="text-sm font-extrabold text-gray-800 dark:text-white">
+                الدوام الفعلي — {actualInfo ? (actualInfo.isToday ? "اليوم" : actualInfo.day.date) : "لا يوجد"}
+              </h2>
+              {actualInfo ? (
+                <span className="mr-auto text-[10px] text-gray-400">
+                  {actualInfo.rows.length} مستخدمًا · تم {actualInfo.done}
+                </span>
+              ) : null}
+            </div>
+            {!actualInfo ? (
+              <p className="text-xs text-gray-400">لا يوجد يوم مسجّل في السجل الرسمي بعد.</p>
+            ) : (
+              <>
+                <div className="mb-1 text-[10px] text-gray-400">
+                  اليوم {dayOrdinal(dayNumberInRound(manager, actualInfo.day))} من{" "}
+                  {manager.rounds.find((r) => r.id === actualInfo.day.roundId)?.days ?? "—"} في الديالة
+                </div>
+                {actualInfo.mine ? (
+                  <div className="rounded-2xl bg-emerald-50 px-3 py-3 text-[11px] dark:bg-emerald-900/20">
+                    <div className="flex flex-wrap items-center gap-2 font-bold text-emerald-900 dark:text-emerald-200">
+                      <span>
+                        موقفي: {actualInfo.myIndex + 1} من {actualInfo.rows.length}
+                      </span>
+                      <span className="text-emerald-700/70 dark:text-emerald-300/70">
+                        · {actualInfo.mine.startTime} → {actualInfo.mine.endTime} ·{" "}
+                        {formatDuration(
+                          durationMin(actualInfo.mine.startTime, actualInfo.mine.endTime)
+                        )}
+                      </span>
+                      <Pill
+                        tone={
+                          actualInfo.mine.status === "done"
+                            ? "green"
+                            : actualInfo.mine.status === "cancelled"
+                              ? "red"
+                              : "blue"
+                        }
+                      >
+                        {actualInfo.mine.status === "done"
+                          ? "تم"
+                          : actualInfo.mine.status === "cancelled"
+                            ? "ملغى"
+                            : "قادم"}
+                      </Pill>
+                    </div>
+                    <div className="mt-1 text-emerald-800/80 dark:text-emerald-300/80">
+                      قبلي {actualInfo.before} مستخدمًا · بعدي{" "}
+                      {Math.max(0, actualInfo.rows.length - actualInfo.myIndex - 1)} مستخدمًا
+                      {actualInfo.mine.actualPersonId && actualInfo.mine.actualPersonId !== actualInfo.mine.personId
+                        ? " · المستخدم الفعلي مختلف عن صاحب الدور (استبدال)"
+                        : ""}
+                    </div>
+                  </div>
+                ) : (
+                  <p className="text-xs leading-relaxed text-gray-400">
+                    لست مسجّلًا في الدوام الفعلي لهذا اليوم — إن أخذت ماءك اليوم فاطلب من المسؤول تسجيلك.
+                  </p>
+                )}
+                <button
+                  className="mt-2 text-[11px] font-bold text-emerald-700 dark:text-emerald-300"
+                  onClick={() => setShowActual(!showActual)}
+                  data-testid="user-actual-toggle"
+                >
+                  {showActual ? "إخفاء القائمة" : `عرض قائمة الدوام الفعلي (${actualInfo.rows.length})`}
+                </button>
+                {showActual ? (
+                  <div className="mt-2 max-h-72 space-y-1 overflow-y-auto">
+                    {actualInfo.rows.map((e, i) => (
+                      <div
+                        key={e.id}
+                        className={cx(
+                          "flex items-center gap-2 rounded-xl px-3 py-1.5 text-[11px]",
+                          e.personId === personId || e.actualPersonId === personId
+                            ? "bg-emerald-100 font-extrabold text-emerald-900 dark:bg-emerald-900/40 dark:text-emerald-200"
+                            : "bg-gray-50 text-gray-700 dark:bg-slate-700 dark:text-slate-200"
+                        )}
+                      >
+                        <span className="w-6 shrink-0 text-center font-black">{i + 1}</span>
+                        <span className="min-w-0 flex-1 truncate">
+                          {e.personId === personId || e.actualPersonId === personId ? "أنا — " : ""}
+                          {manager.persons.find((x) => x.id === (e.actualPersonId ?? e.personId))?.name ?? "—"}
+                        </span>
+                        <span className="text-gray-400">
+                          {e.startTime} → {e.endTime}
+                        </span>
+                        <span
+                          className={cx(
+                            "font-bold",
+                            e.status === "done"
+                              ? "text-emerald-600"
+                              : e.status === "cancelled"
+                                ? "text-red-500"
+                                : "text-gray-400"
+                          )}
+                        >
+                          {e.status === "done" ? "تم" : e.status === "cancelled" ? "ملغى" : "قادم"}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                ) : null}
+              </>
             )}
           </Card>
 
@@ -385,7 +651,7 @@ export default function OfficialScreen() {
           currency={currency}
           onClose={() => setRecordOpen(false)}
           onSaved={() => {
-            setManager(readManagerState());
+            setManager(loadManager());
           }}
           addToMyBook={(turn) => actions.addTurn(turn)}
         />

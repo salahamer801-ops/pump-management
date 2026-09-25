@@ -47,6 +47,9 @@ export default function TurnsScreen() {
   const views = turnViews(state);
   const [open, setOpen] = useState(false);
   const [editing, setEditing] = useState<ShareholderTurn | null>(null);
+  /** إزالة دور بحذف ناعم: سبب موثّق والسجل يبقى محفوظًا */
+  const [removeTurn, setRemoveTurn] = useState<ShareholderTurn | null>(null);
+  const [removeReason, setRemoveReason] = useState("");
 
   const [pumpId, setPumpId] = useState("");
   const [cycleId, setCycleId] = useState("");
@@ -161,7 +164,12 @@ export default function TurnsScreen() {
     <div className="space-y-4">
       <div className="flex items-center justify-between">
         <h1 className="text-xl font-black text-gray-900">دوري</h1>
-        <Button onClick={openAdd} disabled={pumps.length === 0 || cycles.length === 0} className="px-4 py-2.5">
+        <Button
+          onClick={openAdd}
+          disabled={pumps.length === 0 || cycles.length === 0}
+          className="px-4 py-2.5"
+          data-testid="open-turn-form"
+        >
           <Plus size={18} /> تسجيل دور
         </Button>
       </div>
@@ -228,9 +236,13 @@ export default function TurnsScreen() {
                     تعديل
                   </button>
                   <button
-                    onClick={() => actions.deleteTurn(turn.id)}
+                    onClick={() => {
+                      setRemoveTurn(turn);
+                      setRemoveReason("");
+                    }}
                     className="rounded-lg p-1 text-red-400 hover:bg-red-50 hover:text-red-600"
-                    aria-label="حذف الدور"
+                    aria-label="إزالة الدور"
+                    data-testid="remove-turn"
                   >
                     <Trash2 size={16} />
                   </button>
@@ -377,6 +389,43 @@ export default function TurnsScreen() {
             </Button>
           </div>
         </div>
+      </Modal>
+
+      {/* إزالة دور: حذف ناعم بسبب موثّق — لا يُحذف أي سجل */}
+      <Modal open={Boolean(removeTurn)} onClose={() => setRemoveTurn(null)} title="إزالة دور">
+        {removeTurn ? (
+          <div className="space-y-4">
+            <p className="rounded-2xl bg-amber-50 px-4 py-3 text-xs leading-relaxed text-amber-800 dark:bg-amber-900/20 dark:text-amber-300">
+              سيُخفى دور <b>{removeTurn.date}</b> ({removeTurn.startTime} → {removeTurn.endTime} ·{" "}
+              {removeTurn.hours} ساعة) من قوائمك، لكن <b>السجل يبقى محفوظًا</b> مع سبب الإزالة ووقته — لا يُحذف
+              أي سجل نهائيًا.
+            </p>
+            <Field label="سبب الإزالة (يُسجَّل في سجل التغييرات)">
+              <TextArea
+                value={removeReason}
+                onChange={(e) => setRemoveReason(e.target.value)}
+                placeholder="مثال: سجّلته بالخطأ / بيع الدور لغيري"
+                data-testid="remove-turn-reason"
+              />
+            </Field>
+            <div className="flex gap-3">
+              <Button variant="outline" className="flex-1" onClick={() => setRemoveTurn(null)}>
+                إلغاء
+              </Button>
+              <Button
+                variant="danger"
+                className="flex-1"
+                onClick={() => {
+                  actions.deleteTurn(removeTurn.id, { reason: removeReason });
+                  setRemoveTurn(null);
+                }}
+                data-testid="remove-turn-confirm"
+              >
+                <Trash2 size={16} /> إزالة الدور
+              </Button>
+            </div>
+          </div>
+        ) : null}
       </Modal>
     </div>
   );

@@ -25,12 +25,12 @@ export function findCycle(state: ShareholderState, id: string): ShareholderCycle
 
 export function turnsOfCycle(state: ShareholderState, cycleId: string): ShareholderTurn[] {
   return state.turns
-    .filter((t) => t.cycleId === cycleId)
+    .filter((t) => t.cycleId === cycleId && !t.archived)
     .sort((a, b) => a.dayIndex - b.dayIndex);
 }
 
 export function turnsOfPump(state: ShareholderState, pumpId: string): ShareholderTurn[] {
-  return state.turns.filter((t) => t.pumpId === pumpId);
+  return state.turns.filter((t) => t.pumpId === pumpId && !t.archived);
 }
 
 export function dayContributors(
@@ -39,7 +39,7 @@ export function dayContributors(
   dayIndex: number
 ): DayContributor[] {
   return state.dayContributors
-    .filter((c) => c.cycleId === cycleId && c.dayIndex === dayIndex)
+    .filter((c) => c.cycleId === cycleId && c.dayIndex === dayIndex && !c.archived)
     .sort((a, b) => a.startTime.localeCompare(b.startTime));
 }
 
@@ -49,7 +49,7 @@ export function dayFilledHours(
   dayIndex: number
 ): number {
   return state.dayContributors
-    .filter((c) => c.cycleId === cycleId && c.dayIndex === dayIndex)
+    .filter((c) => c.cycleId === cycleId && c.dayIndex === dayIndex && !c.archived)
     .reduce((sum, c) => sum + (c.hours || 0), 0);
 }
 
@@ -84,7 +84,7 @@ export interface PumpSummary {
 export function pumpSummaries(state: ShareholderState): PumpSummary[] {
   return activePumps(state).map((pump) => {
     const cycles = activeCycles(state).filter((c) => c.pumpId === pump.id);
-    const turns = state.turns.filter((t) => t.pumpId === pump.id);
+    const turns = state.turns.filter((t) => t.pumpId === pump.id && !t.archived);
     let dieselCost = 0;
     let dieselLiters = 0;
     let royaltyDue = 0;
@@ -121,6 +121,7 @@ export interface TurnView {
 
 export function turnViews(state: ShareholderState): TurnView[] {
   return state.turns
+    .filter((t) => !t.archived)
     .map((turn) => ({
       turn,
       pump: findPump(state, turn.pumpId),

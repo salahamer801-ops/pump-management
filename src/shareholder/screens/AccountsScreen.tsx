@@ -1,4 +1,4 @@
-import { useRef } from "react";
+import { useRef, useState } from "react";
 import {
   ArrowDownLeft,
   ArrowUpRight,
@@ -21,6 +21,8 @@ export default function AccountsScreen() {
   const summaries = pumpSummaries(state);
   const views = turnViews(state);
   const fileRef = useRef<HTMLInputElement>(null);
+  /** رسالة داخل الواجهة (بدل alert) */
+  const [notice, setNotice] = useState("");
 
   const totals = summaries.reduce(
     (acc, s) => ({
@@ -59,7 +61,7 @@ export default function AccountsScreen() {
           actions.importState(parsed);
         }
       } catch {
-        alert("ملف غير صالح");
+        setNotice("ملف غير صالح — تأكد أنه ملف نسخة احتياطية صادر من التطبيق.");
       }
     };
     reader.readAsText(file);
@@ -225,8 +227,17 @@ export default function AccountsScreen() {
         <p className="mb-3 text-xs text-gray-500">
           صدّر بياناتك كملف واحتفظ به، أو استعده عند الحاجة.
         </p>
+        {notice ? (
+          <p
+            className="mb-3 rounded-2xl bg-red-50 px-3 py-2 text-[11px] font-bold text-red-700 dark:bg-red-900/20 dark:text-red-300"
+            role="alert"
+            data-testid="backup-notice"
+          >
+            {notice}
+          </p>
+        ) : null}
         <div className="flex flex-col gap-2 sm:flex-row">
-          <Button variant="secondary" onClick={exportBackup} className="flex-1">
+          <Button variant="secondary" onClick={() => { setNotice(""); exportBackup(); }} className="flex-1">
             <Download size={16} /> تصدير البيانات
           </Button>
           <Button variant="outline" onClick={() => fileRef.current?.click()} className="flex-1">

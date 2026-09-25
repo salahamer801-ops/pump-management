@@ -17,15 +17,42 @@ export function managerStorageKey(pumpId?: string | null): string {
   return pumpId ? `${MANAGER_STORAGE_KEY}::${pumpId}` : MANAGER_STORAGE_KEY;
 }
 
-export function readManagerState(pumpId?: string | null): AppState | null {
+function parseManagerState(raw: string | null): AppState | null {
   try {
-    const raw = pumpId ? localStorage.getItem(managerStorageKey(pumpId)) : null;
-    const fallback = raw ?? localStorage.getItem(MANAGER_STORAGE_KEY);
-    if (!fallback) return null;
-    const parsed = JSON.parse(fallback) as AppState;
+    const parsed = JSON.parse(raw ?? "null") as AppState;
     const version = (parsed as { version?: number } | null)?.version;
     if (!parsed || (version !== 2 && version !== 3)) return null;
     return parsed;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * قراءة بيانات المسؤول من نفس الجهاز.
+ * البحث بالترتيب: مفتاح المضخة المطلوبة ← المفتاح العام ← أي مضخة محفوظة في هذا
+ * المتصفح (الأحدث تحديثًا) — فيرى المستخدم بيانات مضخته حتى قبل معرفة معرّفها.
+ * المستخدم يقرأ فقط ولا يعدّل السجل الرسمي.
+ */
+export function readManagerState(pumpId?: string | null): AppState | null {
+  try {
+    if (pumpId) {
+      const exact = parseManagerState(localStorage.getItem(managerStorageKey(pumpId)));
+      if (exact) return exact;
+    }
+    const plain = parseManagerState(localStorage.getItem(MANAGER_STORAGE_KEY));
+    if (plain) return plain;
+
+    let best: AppState | null = null;
+    for (let i = 0; i < localStorage.length; i += 1) {
+      const key = localStorage.key(i);
+      if (!key || !key.startsWith(`${MANAGER_STORAGE_KEY}::`)) continue;
+      const candidate = parseManagerState(localStorage.getItem(key));
+      if (!candidate) continue;
+      const stamp = (st: AppState) => st.auditLogs?.[0]?.at ?? st.pump?.createdAt ?? "";
+      if (!best || stamp(candidate) > stamp(best)) best = candidate;
+    }
+    return best;
   } catch {
     return null;
   }

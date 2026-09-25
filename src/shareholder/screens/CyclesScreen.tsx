@@ -92,7 +92,7 @@ export default function CyclesScreen() {
     <div className="space-y-4">
       <div className="flex items-center justify-between">
         <h1 className="text-xl font-black text-gray-900 dark:text-white">الدياله</h1>
-        <Button onClick={() => setOpen(true)} disabled={pumps.length === 0} className="px-4 py-2.5">
+        <Button onClick={() => setOpen(true)} disabled={pumps.length === 0} className="px-4 py-2.5" data-testid="open-form">
           <Plus size={18} /> إضافة الدياله
         </Button>
       </div>
@@ -273,6 +273,9 @@ function DayDetailModal({
   const pump = cycle ? findPump(state, cycle.pumpId) : undefined;
   const [view, setView] = useState<"list" | "form">("list");
   const [editing, setEditing] = useState<DayContributor | null>(null);
+  /** إزالة مساهم اليوم بحذف ناعم بسبب موثّق */
+  const [removeTarget, setRemoveTarget] = useState<DayContributor | null>(null);
+  const [removeReason, setRemoveReason] = useState("");
 
   if (!cycle || !pump) {
     return null;
@@ -367,7 +370,8 @@ function DayDetailModal({
   };
 
   return (
-    <Modal open onClose={onClose} title={view === "list" ? `اليوم ${dayIndex}` : (editing ? "تعديل مساهم" : "إضافة مساهم")}>
+    <>
+      <Modal open onClose={onClose} title={view === "list" ? `اليوم ${dayIndex}` : (editing ? "تعديل مساهم" : "إضافة مساهم")}>
       {view === "list" ? (
         <div className="space-y-4">
           <div className="rounded-2xl bg-emerald-50 p-4 dark:bg-emerald-900/30">
@@ -443,9 +447,13 @@ function DayDetailModal({
                         تعديل
                       </button>
                       <button
-                        onClick={() => actions.deleteDayContributor(c.id)}
+                        onClick={() => {
+                          setRemoveTarget(c);
+                          setRemoveReason("");
+                        }}
                         className="rounded-lg p-1 text-red-400 hover:bg-red-50 hover:text-red-600 dark:hover:bg-red-900/30"
-                        aria-label="حذف المساهم"
+                        aria-label="إزالة المساهم"
+                        data-testid="remove-contributor"
                       >
                         <Trash2 size={16} />
                       </button>
@@ -565,6 +573,43 @@ function DayDetailModal({
           </div>
         </div>
       )}
-    </Modal>
+      </Modal>
+
+      {/* إزالة مساهم اليوم: حذف ناعم بسبب موثّق — لا يُحذف أي سجل */}
+      <Modal open={Boolean(removeTarget)} onClose={() => setRemoveTarget(null)} title="إزالة مساهم من اليوم">
+        {removeTarget ? (
+          <div className="space-y-4">
+            <p className="rounded-2xl bg-amber-50 px-4 py-3 text-xs leading-relaxed text-amber-800 dark:bg-amber-900/20 dark:text-amber-300">
+              سيُخفى <b>{removeTarget.name}</b> ({removeTarget.hours} ساعة في اليوم {removeTarget.dayIndex}) من
+              قوائمك، لكن <b>السجل يبقى محفوظًا</b> مع سبب الإزالة ووقته — لا يُحذف أي سجل نهائيًا.
+            </p>
+            <Field label="سبب الإزالة (يُسجَّل في سجل التغييرات)">
+              <TextArea
+                value={removeReason}
+                onChange={(e) => setRemoveReason(e.target.value)}
+                placeholder="مثال: أُضيف بالخطأ / سُجّل في يوم آخر"
+                data-testid="remove-contributor-reason"
+              />
+            </Field>
+            <div className="flex gap-3">
+              <Button variant="outline" className="flex-1" onClick={() => setRemoveTarget(null)}>
+                إلغاء
+              </Button>
+              <Button
+                variant="danger"
+                className="flex-1"
+                onClick={() => {
+                  actions.deleteDayContributor(removeTarget.id, { reason: removeReason });
+                  setRemoveTarget(null);
+                }}
+                data-testid="remove-contributor-confirm"
+              >
+                <Trash2 size={16} /> إزالة المساهم
+              </Button>
+            </div>
+          </div>
+        ) : null}
+      </Modal>
+    </>
   );
 }
