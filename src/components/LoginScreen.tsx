@@ -5,7 +5,7 @@
  * تنبيه: هذه الشاشة غير مربوطة بأي مسار في التطبيق حتى الآن: من يستوردها هو من
  * يحدّد متى تظهر. لا تعمل في نفس وقت شاشة الدخول الخادمية على نفس الشاشة.
  */
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { loginUser, registerUser } from '../lib/auth';
 import type { AuthSession } from '../types';
 
@@ -17,6 +17,12 @@ type Mode = 'login' | 'register-manager' | 'register-user' | 'forgot';
 
 export default function LoginScreen({ onLogin }: Props) {
   const [mode, setMode] = useState<Mode>('login');
+  /** إعلان مسؤول النظام العام (إن وُجد اتصال) */
+  const [announcement, setAnnouncement] = useState<{
+    active: boolean;
+    tone: 'info' | 'warn' | 'danger';
+    text: string;
+  } | null>(null);
   const [phone, setPhone] = useState('');
   const [password, setPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
@@ -24,6 +30,21 @@ export default function LoginScreen({ onLogin }: Props) {
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
   const [success, setSuccess] = useState('');
+
+  useEffect(() => {
+    let alive = true;
+    fetch('/api/settings/public')
+      .then((r) => (r.ok ? r.json() : null))
+      .then((data) => {
+        if (alive && data?.announcement) setAnnouncement(data.announcement);
+      })
+      .catch(() => {
+        /* بلا اتصال: الوضع المحلي يعمل كما هو */
+      });
+    return () => {
+      alive = false;
+    };
+  }, []);
 
   const handleLogin = async () => {
     setError('');
@@ -88,6 +109,21 @@ export default function LoginScreen({ onLogin }: Props) {
           {mode === 'register-user' && 'إنشاء حساب مساهم'}
           {mode === 'forgot' && 'استعادة كلمة المرور'}
         </p>
+
+        {announcement?.active && announcement.text.trim() ? (
+          <div
+            data-testid="local-announcement"
+            className={`text-sm rounded-lg p-3 mb-4 text-center font-bold ${
+              announcement.tone === 'danger'
+                ? 'bg-red-50 text-red-700'
+                : announcement.tone === 'warn'
+                  ? 'bg-amber-50 text-amber-800'
+                  : 'bg-sky-50 text-sky-800'
+            }`}
+          >
+            {announcement.text}
+          </div>
+        ) : null}
 
         {error && (
           <div className="bg-red-50 text-red-700 text-sm rounded-lg p-3 mb-4 text-center">{error}</div>

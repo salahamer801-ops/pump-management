@@ -84,6 +84,17 @@ CREATE TABLE IF NOT EXISTS users (
   last_login_at timestamptz
 );
 
+/* مسؤول النظام: أول حساب مسؤول يُرقّى تلقائيًا، وبعدها يُعيَّن من اللوحة */
+ALTER TABLE users ADD COLUMN IF NOT EXISTS is_admin boolean NOT NULL DEFAULT false;
+
+/* إعدادات النظام العامة (إعلان للمستخدمين، فتح/إغلاق التسجيل) */
+CREATE TABLE IF NOT EXISTS app_settings (
+  key text PRIMARY KEY,
+  value jsonb NOT NULL DEFAULT '{}'::jsonb,
+  updated_at timestamptz NOT NULL DEFAULT now(),
+  updated_by uuid
+);
+
 CREATE TABLE IF NOT EXISTS pumps (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   code text NOT NULL UNIQUE,

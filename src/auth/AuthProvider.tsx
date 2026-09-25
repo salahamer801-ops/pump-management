@@ -49,6 +49,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setToken(res.token);
     const next: AuthSession = {
       user: res.user,
+      announcement: res.announcement,
       managedPumps: res.managedPumps ?? [],
       memberships: res.memberships ?? [],
       pendingRequests: res.pendingRequests ?? 0,
@@ -66,6 +67,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       const res = await api<AuthSession>("/api/auth/me");
       setSession({
         user: res.user,
+        announcement: res.announcement,
         managedPumps: res.managedPumps ?? [],
         memberships: res.memberships ?? [],
         pendingRequests: res.pendingRequests ?? 0,

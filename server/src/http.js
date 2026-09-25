@@ -40,6 +40,14 @@ export const requireAuth = wrap(async (req, _res, next) => {
   next();
 });
 
+/** لوحة مسؤول النظام: صلاحية من القاعدة فقط */
+export const requireAdmin = (req, _res, next) => {
+  if (!req.user || !req.user.isAdmin) {
+    return next(forbidden("هذه اللوحة لمسؤول النظام فقط.", "admin_only"));
+  }
+  return next();
+};
+
 export const requireManagerAccount = (req, _res, next) => {
   if (!req.user || req.user.accountType !== "manager") {
     return next(forbidden("هذه العملية للمسؤول فقط.", "manager_only"));

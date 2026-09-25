@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import {
   ArrowRight,
   Droplets,
@@ -16,12 +16,39 @@ import { Button, Field, TextInput, cx } from "../components/ui";
 
 type Tab = "login" | "register" | "forgot";
 
+interface PublicSettings {
+  announcement: { active: boolean; tone: "info" | "warn" | "danger"; text: string };
+  registration: { manager: boolean; user: boolean };
+}
+
 const errorText = (err: unknown) =>
   err instanceof ApiError ? err.message : "تعذّر تنفيذ العملية — حاول مرة أخرى.";
 
 export default function LoginScreen() {
   const [tab, setTab] = useState<Tab>("login");
   const [notice, setNotice] = useState("");
+  /** إعدادات عامة: إعلان مسؤول النظام وحالة فتح التسجيل */
+  const [system, setSystem] = useState<PublicSettings | null>(null);
+
+  useEffect(() => {
+    let alive = true;
+    fetch("/api/settings/public")
+      .then((r) => (r.ok ? r.json() : null))
+      .then((data) => {
+        if (alive && data) setSystem(data as PublicSettings);
+      })
+      .catch(() => {
+        /* بلا اتصال: تبقى الشاشة تعمل كما هي */
+      });
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  const announcement = system?.announcement;
+  const registrationClosed = system
+    ? !system.registration.manager && !system.registration.user
+    : false;
 
   return (
     <div className="mx-auto flex min-h-screen max-w-lg flex-col px-4 py-8">
@@ -34,6 +61,27 @@ export default function LoginScreen() {
           حسابك الشخصي يحمي بياناتك — الدخول برقم الهاتف وكلمة المرور
         </p>
       </div>
+
+      {announcement?.active && announcement.text.trim() ? (
+        <div
+          data-testid="login-announcement"
+          className={`mb-4 rounded-2xl border px-4 py-3 text-[11px] font-bold leading-relaxed ${
+            announcement.tone === "danger"
+              ? "border-red-100 bg-red-50 text-red-800"
+              : announcement.tone === "warn"
+                ? "border-amber-100 bg-amber-50 text-amber-800"
+                : "border-sky-100 bg-sky-50 text-sky-800"
+          }`}
+        >
+          {announcement.text}
+        </div>
+      ) : null}
+
+      {registrationClosed ? (
+        <p className="mb-4 rounded-2xl bg-gray-100 px-4 py-3 text-center text-[11px] font-bold text-gray-600">
+          إنشاء الحسابات متوقف حاليًا — تواصل مع مسؤول النظام.
+        </p>
+      ) : null}
 
       <div className="mb-5 grid grid-cols-3 gap-1 rounded-2xl bg-gray-100 p-1">
         <TabButton active={tab === "login"} onClick={() => setTab("login")} label="دخول" />

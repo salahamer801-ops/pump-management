@@ -28,6 +28,8 @@ import {
   verifyPassword,
 } from "../security.js";
 import { isValidPhone } from "../security.js";
+import { getSettings } from "../settings.js";
+import { ensureBootstrapAdmin } from "../bootstrap.js";
 
 export const authRouter = Router();
 
@@ -90,8 +92,11 @@ export async function pumpsAndMemberships(userId) {
 
 async function sessionPayload(userRow) {
   const { managedPumps, memberships } = await pumpsAndMemberships(userRow.id);
+  const settings = await getSettings();
   return {
     user: publicUser(userRow),
+    /* الإعلان العام يصل مع كل دخول — لا يحتاج نداءً إضافيًا */
+    announcement: settings.announcement,
     managedPumps,
     memberships,
     pendingRequests: managedPumps.reduce((sum, p) => sum + p.pendingCount, 0),
@@ -113,6 +118,13 @@ authRouter.post(
       throw badRequest("كلمتا المرور غير متطابقتين.", "confirm_mismatch");
     }
 
+    const systemSettings = await getSettings();
+    const registrationOpen =
+      type === "manager" ? systemSettings.registration.manager : systemSettings.registration.user;
+    if (!registrationOpen) {
+      throw forbidden("إنشاء الحسابات متوقف حاليًا — تواصل مع مسؤول النظام.", "registration_closed");
+    }
+
     if (!rateLimit(`register:${req.socket?.remoteAddress ?? "ip"}`, { limit: 20, windowMs: 60 * 60 * 1000 })) {
       throw conflict("محاولات كثيرة — حاول بعد قليل.", "rate_limited");
     }
@@ -129,6 +141,9 @@ authRouter.post(
       [String(name).trim(), cleanPhone, hashPassword(String(password)), type]
     );
     const userRow = inserted.rows[0];
+
+    const promoted = await ensureBootstrapAdmin(userRow, req);
+    if (promoted) Object.assign(userRow, promoted);
 
     await logAudit(req, {
       actorId: userRow.id,
@@ -179,6 +194,10 @@ authRouter.post(
       throw unauthorized("رقم الهاتف أو كلمة المرور غير صحيحة.", "bad_credentials");
     }
     if (userRow.status !== "active") throw forbidden("الحساب موقوف — تواصل مع إدارة النظام.");
+
+    /* أول حساب مسؤول يدخل يصبح مسؤول النظام إن لم يوجد مسؤول بعد */
+    const promotedRow = await ensureBootstrapAdmin(userRow, req);
+    Object.assign(userRow, promotedRow ?? {});
 
     await q(`UPDATE users SET last_login_at = now() WHERE id = $1`, [userRow.id]);
     const token = await createSession(userRow.id);

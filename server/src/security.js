@@ -151,6 +151,8 @@ export function publicUser(row) {
     phone: row.phone,
     accountType: row.account_type,
     status: row.status,
+    /* مسؤول النظام: صلاحية إدارة اللوحة — تُقرأ من القاعدة لا من الواجهة */
+    isAdmin: Boolean(row.is_admin),
     createdAt: row.created_at,
     lastLoginAt: row.last_login_at,
   };
