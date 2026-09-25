@@ -138,9 +138,7 @@ function Shell({
       </header>
 
       <main className="px-4 py-4">
-        {tab === "home" && (
-          <HomeScreen onGoToPumps={() => setTab("pumps")} onGoToCycles={() => setTab("cycles")} />
-        )}
+        {tab === "home" && <HomeScreen onGoTo={goTab} />}
         {tab === "pumps" && <PumpsScreen />}
         {tab === "cycles" && <CyclesScreen />}
         {tab === "turns" && <TurnsScreen />}

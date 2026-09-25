@@ -4,6 +4,7 @@ import {
   CalendarClock,
   ClipboardCheck,
   Droplets,
+  Eye,
   Link2,
   ListOrdered,
   Lock,
@@ -16,8 +17,8 @@ import {
 import { useShareholder } from "../store";
 import { useAuth } from "../../auth/AuthProvider";
 import type { ShareholderTurn } from "../types";
-import type { AppState, Person, PersonalRecord } from "../../domain/types";
-import { appendPersonalRecord, readManagerState, readUserLink, saveUserLink } from "../../domain/storage";
+import type { AppState, Person } from "../../domain/types";
+import { readManagerState, readUserLink, saveUserLink } from "../../domain/storage";
 import {
   baseRosterCapacityMin,
   baseRosterTimeline,
@@ -35,7 +36,7 @@ import { Button, Card, Field, Modal, NumberInput, Pill, StatCard, TextArea, Text
  * بين السجل الرسمي والسجل الشخصي (§30-33، §52).
  */
 export default function OfficialScreen() {
-  const { actions } = useShareholder();
+  const { state, actions } = useShareholder();
   const { session } = useAuth();
   /** قراءة السجل الرسمي: مضخة العضوية المعتمدة أولًا، ثم أي مضخة محفوظة في الجهاز */
   const linkedPumpId =
@@ -87,7 +88,20 @@ export default function OfficialScreen() {
       fuel: usages.reduce((s, u) => s + u.fuelAmountDue, 0),
       royalty: usages.reduce((s, u) => s + u.royaltyAmountDue, 0),
     };
-    const personal = manager.personalRecords.filter((p) => p.personId === personId && !p.archived);
+    /**
+     * سجلي الشخصي من مخزني الخاص (لا يُكتب في سجل المسؤول إطلاقًا).
+     * المقارنة هنا: السجل الرسمي (اطلاع فقط) مقابل ما سجّلته أنا.
+     */
+    const personal = state.turns
+      .filter((t) => !t.archived)
+      .map((t) => ({
+        id: t.id,
+        date: t.date,
+        minutes: Math.round((t.hours || 0) * 60),
+        liters: t.dieselLiters,
+        cost: t.dieselCost,
+        notes: t.note,
+      }));
     const rights = manager.rights.filter(
       (r) => r.pumpId === (pump?.id ?? "") && r.holderPersonId === personId
     );
@@ -115,7 +129,7 @@ export default function OfficialScreen() {
     });
 
     return { upcoming, usages, totals, personal, rights, shareholder, balance, compare };
-  }, [manager, personId, pump?.id]);
+  }, [manager, personId, pump?.id, state.turns]);
 
   /**
    * قسم الدوام الأساسي: نصيبي في كشف ديالتي — اسمي وترتيبي ووقتي المتوقع،
@@ -180,6 +194,15 @@ export default function OfficialScreen() {
 
   return (
     <div className="space-y-4">
+      {/* تنبيه الصلاحيات: كل بيانات المسؤول هنا للاطلاع فقط */}
+      <div className="flex items-start gap-2 rounded-2xl border border-amber-100 bg-amber-50 px-3 py-2.5 dark:border-amber-900/40 dark:bg-amber-900/20">
+        <Eye size={15} className="mt-0.5 shrink-0 text-amber-600 dark:text-amber-300" />
+        <p className="text-[11px] leading-relaxed text-amber-800 dark:text-amber-200">
+          <b>اطلاع فقط.</b> لا يمكنك تعديل أي شيء في حساب المسؤول — كل ما تراه هنا يُقرأ من سجل المضخة كما
+          سجّله المسؤول. وما تسجّله أنت يبقى في <b>سجلك الشخصي عندك</b> ولا يُكتب في حسابه.
+        </p>
+      </div>
+
       <Card className="p-4">
         <div className="flex items-center gap-2">
           <Link2 size={16} className="text-emerald-600" />
@@ -562,7 +585,12 @@ export default function OfficialScreen() {
 
           {myData.personal.length > 0 ? (
             <Card className="p-4">
-              <h2 className="mb-2 text-sm font-extrabold text-gray-800 dark:text-white">سجلي الشخصي (لا يعدّله المسؤول)</h2>
+              <h2 className="mb-2 flex flex-wrap items-center gap-2 text-sm font-extrabold text-gray-800 dark:text-white">
+                سجلي الشخصي — عندي أنا فقط
+                <Pill tone="gray">
+                  <Eye size={11} /> لا يُرسل ولا يعدّل سجل المسؤول
+                </Pill>
+              </h2>
               <div className="space-y-2">
                 {myData.personal
                   .slice()
@@ -576,7 +604,7 @@ export default function OfficialScreen() {
                         <span className="font-bold text-sky-800 dark:text-sky-200">{r.date}</span>
                         <span className="text-sky-700 dark:text-sky-300">{formatDuration(r.minutes)}</span>
                         <span className="mr-auto text-sky-700 dark:text-sky-300">
-                          {formatNumber(r.dieselLiters)} لتر × {formatNumber(r.dieselPricePerLiter)}
+                          {formatNumber(r.liters)} لتر · {formatMoney(r.cost, currency)}
                         </span>
                       </div>
                       {r.notes ? <div className="mt-1 text-[10px] text-sky-700/80">{r.notes}</div> : null}
@@ -646,7 +674,6 @@ export default function OfficialScreen() {
 
       {recordOpen && personId ? (
         <DailyRecordModal
-          personId={personId}
           personName={person?.name ?? ""}
           currency={currency}
           onClose={() => setRecordOpen(false)}
@@ -661,14 +688,12 @@ export default function OfficialScreen() {
 }
 
 function DailyRecordModal({
-  personId,
   personName,
   currency,
   onClose,
   onSaved,
   addToMyBook,
 }: {
-  personId: string;
   personName: string;
   currency: "YER" | "SAR" | "USD";
   onClose: () => void;
@@ -690,7 +715,8 @@ function DailyRecordModal({
     <Modal open onClose={onClose} title="تسجيل يومي في سجلي الشخصي">
       <div className="space-y-3">
         <p className="rounded-2xl bg-gray-50 px-3 py-2 text-[11px] text-gray-500 dark:bg-slate-700 dark:text-slate-300">
-          السجل باسم <b>{personName}</b> — يُسجَّل كسجل شخصي مستقل، ولا يستطيع المسؤول تعديله.
+          السجل باسم <b>{personName}</b> — يُحفظ في سجلي الشخصي عندي فقط، ولا يُكتب ولا يُعدَّل أي شيء في
+          حساب المسؤول.
         </p>
         <Field label="التاريخ">
           <TextInput type="date" value={date} onChange={(e) => setDate(e.target.value)} />
@@ -732,28 +758,6 @@ function DailyRecordModal({
         <Button
           className="w-full"
           onClick={() => {
-            const record: PersonalRecord = {
-              id: uid("pr"),
-              personId,
-              pumpId: null,
-              dayId: null,
-              date,
-              startTime: start,
-              endTime: end,
-              minutes,
-              dieselLiters: liters,
-              dieselPricePerLiter: price,
-              dieselAmount,
-              royaltyAmount: royalty,
-              paidAmount: paid,
-              debtAmount: Math.max(0, dieselAmount + royalty - paid),
-              operationType: "usage",
-              notes,
-              matchStatus: "personal_only",
-              archived: false,
-              createdAt: new Date().toISOString(),
-            };
-            appendPersonalRecord(record, personName);
             addToMyBook({
               id: uid("t"),
               cycleId: "",

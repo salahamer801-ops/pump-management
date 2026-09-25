@@ -94,11 +94,23 @@ export default function PumpsScreen() {
 
   return (
     <div className="space-y-4">
-      <div className="flex items-center justify-between">
-        <h1 className="text-xl font-black text-gray-900">المضخات</h1>
-        <Button onClick={openAdd} className="px-4 py-2.5" data-testid="open-pump-form">
-          <Plus size={18} /> إضافة مضخة
-        </Button>
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <h1 className="text-2xl font-black tracking-tight text-gray-900 dark:text-white">المضخات</h1>
+          <p className="mt-0.5 text-[11px] font-bold text-gray-400 dark:text-slate-400">
+            مضخاتي المرتبطة بحسابي وسجلي الخاص
+          </p>
+        </div>
+        <button
+          type="button"
+          onClick={openAdd}
+          
+          aria-label="إضافة مضخة"
+          data-testid="open-pump-form"
+          className="flex shrink-0 items-center gap-1.5 rounded-full bg-gradient-to-l from-emerald-600 to-emerald-500 px-4 py-2.5 text-xs font-extrabold text-white shadow-lg shadow-emerald-600/25 transition active:scale-95 disabled:opacity-40 disabled:shadow-none"
+        >
+          <Plus size={16} /> إضافة
+        </button>
       </div>
 
       <MembershipPanel />
