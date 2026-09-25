@@ -14,7 +14,8 @@ export function readManagerState(): AppState | null {
     const raw = localStorage.getItem(MANAGER_STORAGE_KEY);
     if (!raw) return null;
     const parsed = JSON.parse(raw) as AppState;
-    if (!parsed || parsed.version !== 2) return null;
+    const version = (parsed as { version?: number } | null)?.version;
+    if (!parsed || (version !== 2 && version !== 3)) return null;
     return parsed;
   } catch {
     return null;

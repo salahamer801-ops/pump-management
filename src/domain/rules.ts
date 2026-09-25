@@ -5,12 +5,19 @@
 import type {
   ActualUsage,
   AppState,
+  Conflict,
   ConflictKind,
+  ConflictStatus,
   DayEntry,
   DayIssueSeverity,
+  Debt,
+  DebtStatus,
   DialaDay,
   DialaRound,
   DieselSettlement,
+  Payment,
+  PaymentMethod,
+  PaymentType,
   Person,
   Pump,
   RightKind,
@@ -19,6 +26,8 @@ import type {
   ShareholderUseStatus,
   ShareRight,
   Transaction,
+  TransferEvent,
+  TransferType,
   TxDirection,
   TxKind,
   UsageType,
@@ -390,22 +399,28 @@ export function planEntriesFromSchedule(
 
 export interface Suggestion {
   person: Person;
-  tier: 1 | 2 | 3 | 4;
+  tier: 1 | 2 | 3 | 4 | 5;
   tags: string[];
   lastSeen: string;
 }
 
 const TIER_LABEL: Record<number, string> = {
-  1: "مساهم أساسي",
-  2: "مرتبط بالمضخة",
-  3: "سبق تسجيله",
-  4: "شخص آخر",
+  1: "مساهم أساسي في المضخة",
+  2: "صاحب حق حالي",
+  3: "استخدم المضخة سابقًا",
+  4: "مرتبط بالسهم",
+  5: "شخص مسجّل",
 };
 
 export function tierLabel(tier: number): string {
   return TIER_LABEL[tier] ?? "";
 }
 
+/**
+ * ترتيب الاقتراحات (§20): مساهمو نفس المضخة ← أصحاب الحق الحاليين ←
+ * من استخدم المضخة سابقًا ← المرتبطون بالسهم ← البحث العام.
+ * ظهور الشخص هنا لا ينشئ سهمًا ولا حقًا ولا دينًا (§20).
+ */
 export function suggestPeople(
   state: AppState,
   pumpId: string,
@@ -413,9 +428,10 @@ export function suggestPeople(
   limit = 40
 ): Suggestion[] {
   const q = query.trim();
+  const today = todayISO();
   const map = new Map<string, Suggestion>();
 
-  const push = (person: Person, tier: 1 | 2 | 3 | 4, tag: string, lastSeen: string) => {
+  const push = (person: Person, tier: 1 | 2 | 3 | 4 | 5, tag: string, lastSeen: string) => {
     const existing = map.get(person.id);
     if (existing) {
       if (!existing.tags.includes(tag)) existing.tags.push(tag);
@@ -426,24 +442,25 @@ export function suggestPeople(
     map.set(person.id, { person, tier, tags: [tag], lastSeen });
   };
 
-  // الأولوية 1: المساهمون الأساسيون
+  // 1) المساهمون الأساسيون في نفس المضخة
   for (const sh of activeShareholders(state, pumpId)) {
     const p = findPerson(state, sh.personId);
     if (p) push(p, 1, "مساهم أساسي", sh.startDate || "");
   }
 
-  // الأولوية 2: أصحاب الحقوق والمستأجرون والمستخدمون السابقون
-  for (const r of state.rights.filter((r) => r.pumpId === pumpId)) {
+  // 2) أصحاب الحقوق الحاليون (سجل الحقوق هو المصدر)
+  for (const r of state.rights.filter((r) => r.pumpId === pumpId && r.status === "active")) {
+    if (r.endedAt && r.endedAt < today) continue;
     const p = findPerson(state, r.holderPersonId);
     if (!p) continue;
-    push(p, 2, r.kind === "rent" ? "مستأجر" : "صاحب حق", r.startedAt || "");
-  }
-  for (const u of state.usages.filter((u) => u.pumpId === pumpId)) {
-    const p = findPerson(state, u.personId);
-    if (p) push(p, 2, "مستخدم سابق", u.date || "");
+    push(p, 2, r.kind === "rent" ? "مستأجر حالي" : "صاحب حق حالي", r.startedAt || "");
   }
 
-  // الأولوية 3: من سبق تسجيله في أيام فعلية
+  // 3) من استخدم المضخة سابقًا
+  for (const u of state.usages.filter((u) => u.pumpId === pumpId)) {
+    const p = findPerson(state, u.personId);
+    if (p) push(p, 3, "مستخدم سابق", u.date || "");
+  }
   const pumpDays = new Set(state.days.filter((d) => d.pumpId === pumpId).map((d) => d.id));
   for (const e of state.entries) {
     if (!pumpDays.has(e.dayId)) continue;
@@ -453,9 +470,25 @@ export function suggestPeople(
     if (a) push(a, 3, "استخدم سابقًا", "");
   }
 
-  // الأولوية 4: بقية الأشخاص
+  // 4) المرتبطون بالسهم (طرف آخر مسجَّل أو ناقل حق)
+  for (const sh of state.shareholders.filter((s) => s.pumpId === pumpId && !s.archived)) {
+    const c = findPerson(state, sh.counterpartPersonId ?? null);
+    if (c) push(c, 4, sh.useStatus === "rented" ? "مرتبط بالتأجير" : "مرتبط بالسهم", sh.useStatusAt || "");
+  }
+  for (const r of state.rights.filter((r) => r.pumpId === pumpId)) {
+    const from = findPerson(state, r.fromPersonId);
+    if (from) push(from, 4, "ناقل حق سابق", r.startedAt || "");
+  }
+  for (const t of state.transferEvents.filter((t) => t.pumpId === pumpId)) {
+    const from = findPerson(state, t.fromPersonId);
+    const to = findPerson(state, t.toPersonId);
+    if (from) push(from, 4, "طرف في سلفة", t.date || "");
+    if (to) push(to, 4, "طرف في سلفة", t.date || "");
+  }
+
+  // 5) البحث العام في كل الأشخاص المسجّلين
   for (const p of state.persons) {
-    if (!p.archived) push(p, 4, "شخص مسجّل", "");
+    if (!p.archived) push(p, 5, "شخص مسجّل", "");
   }
 
   let list = Array.from(map.values());
@@ -596,18 +629,74 @@ export function dayIssues(state: AppState, day: DialaDay, pump: Pump): DayIssue[
     }
   }
 
-  // تجاوز إجمالي ساعات التشغيل
+  // تجاوز إجمالي ساعات التشغيل — مع مراعاة التوقفات (§8, §22)
+  const dayStoppageMin = state.stoppages
+    .filter((s) => s.dayId === day.id && !s.archived)
+    .reduce((s, st) => s + st.minutes, 0);
+  const effectiveMin = Math.max(0, window.capacityMin - dayStoppageMin);
   const total = entries
     .filter((e) => e.status !== "cancelled")
     .reduce((s, e) => s + entryMinutes(e), 0);
-  if (total > window.capacityMin + 1) {
+  if (total > effectiveMin + 1) {
     issues.push({
       kind: "over_capacity",
       severity: "warn",
       key: `capacity-${day.id}`,
-      message: `مجموع الساعات ${Math.round(total / 60 * 10) / 10} ساعة يتجاوز ساعات تشغيل المضخة (${Math.round(
-        window.capacityMin / 60 * 10
-      ) / 10} ساعة) بمقدار ${Math.round((total - window.capacityMin) / 60 * 10) / 10} ساعة.`,
+      message: `مجموع ساعات الترتيب ${toHours(total)} ساعة يتجاوز الطاقة المتاحة (${toHours(
+        effectiveMin
+      )} ساعة = ${toHours(window.capacityMin)} ساعة تشغيل − ${toHours(dayStoppageMin)} ساعة توقف) بمقدار ${toHours(
+        total - effectiveMin
+      )} ساعة.`,
+      entryIds: [],
+    });
+  }
+
+  // تعارض الاستخدامات الفعلية (§7) — يُعرض تحذيرًا، ولا يُحذف أي سجل تلقائيًا
+  const dayUsages = state.usages.filter((u) => u.dayId === day.id && u.status === "active");
+  const usageSpans = dayUsages.map((u) => ({
+    usage: u,
+    span: entryInterval(anchor, u.startTime, u.endTime, window.capacityMin),
+  }));
+  for (let i = 0; i < usageSpans.length; i++) {
+    for (let j = i + 1; j < usageSpans.length; j++) {
+      const a = usageSpans[i];
+      const b = usageSpans[j];
+      const overlap = rangesOverlap(a.span, b.span);
+      if (overlap > 0) {
+        issues.push({
+          kind: "overlap",
+          severity: "warn",
+          key: `usage-overlap-${a.usage.id}-${b.usage.id}`,
+          message: `تداخل في الاستخدام الفعلي بين ${personName(
+            state,
+            a.usage.personId
+          )} (${a.usage.startTime} → ${a.usage.endTime}) و${personName(
+            state,
+            b.usage.personId
+          )} (${b.usage.startTime} → ${b.usage.endTime}) بمقدار ${Math.round(overlap)} دقيقة.`,
+          entryIds: [],
+        });
+      }
+    }
+  }
+
+  // تجاوز ساعات المضخة بحسب الاستخدام الفعلي — بالتفصيل (§8)
+  const usageTotal = dayUsages.reduce((s, u) => s + u.minutes, 0);
+  if (usageTotal > effectiveMin + 1) {
+    const over = usageTotal - effectiveMin;
+    const reasons = dayUsages
+      .filter((u) => u.overCapacity)
+      .map((u) => u.overCapacityReason)
+      .filter(Boolean);
+    issues.push({
+      kind: "over_capacity",
+      severity: "warn",
+      key: `usage-capacity-${day.id}`,
+      message: `إجمالي الاستخدام الفعلي ${toHours(usageTotal)} ساعة · ساعات المضخة المتاحة ${toHours(
+        effectiveMin
+      )} ساعة (${toHours(window.capacityMin)} تشغيل − ${toHours(dayStoppageMin)} توقف) · مقدار التجاوز ${toHours(
+        over
+      )} ساعة${reasons.length ? ` · سبب مسجَّل: ${reasons.join(" | ")}` : " · لا يوجد سبب مسجَّل"}.`,
       entryIds: [],
     });
   }
@@ -645,10 +734,16 @@ export interface DaySummary {
   plannedMin: number;
   usageMin: number;
   capacityMin: number;
+  /** طاقة الجدول الأساسي وقت إنشاء اليوم (§4) */
+  plannedCapacityMin: number;
+  /** الطاقة الفعلية = طاقة النافذة − التوقفات (§22) */
+  effectiveMin: number;
   remainingMin: number;
   overMin: number;
   liters: number;
   fuelAmount: number;
+  /** مجموع التكاليف المسجّلة بسعر المستخدم الشخصي */
+  personalFuelCost: number;
   royaltyAmount: number;
   usageAmount: number;
   stoppageMin: number;
@@ -662,22 +757,31 @@ export function daySummary(state: AppState, day: DialaDay, pump: Pump): DaySumma
   const plannedMin = entries.reduce((s, e) => s + entryMinutes(e), 0);
   const usageMin = usages.reduce((s, u) => s + u.minutes, 0);
   const liters = usages.reduce((s, u) => s + u.fuelLiters, 0);
+  const personalFuelCost = usages.reduce(
+    (s, u) => s + (u.personalFuelPriceSnapshot > 0 ? u.fuelCost : 0),
+    0
+  );
   const fuelAmount = usages.reduce((s, u) => s + u.fuelAmountDue, 0);
   const royaltyAmount = usages.reduce((s, u) => s + u.royaltyAmountDue, 0);
   const stoppageMin = state.stoppages
     .filter((s) => s.dayId === day.id && !s.archived)
     .reduce((s, st) => s + st.minutes, 0);
-  const effective = plannedMin > 0 ? plannedMin : usageMin;
+  /** الساعات الفعلية المتوقّعة: الاستخدام الفعلي إن وُجد، وإلا المخطط */
+  const measured = usageMin > 0 ? usageMin : plannedMin;
+  const effectiveMin = Math.max(0, window.capacityMin - stoppageMin);
   return {
     dayId: day.id,
     persons: entries.length,
     plannedMin,
     usageMin,
     capacityMin: window.capacityMin,
-    remainingMin: Math.max(0, window.capacityMin - effective),
-    overMin: Math.max(0, effective - window.capacityMin),
+    plannedCapacityMin: day.plannedCapacityMin || window.capacityMin,
+    effectiveMin,
+    remainingMin: Math.max(0, effectiveMin - measured),
+    overMin: Math.max(0, measured - effectiveMin),
     liters: Math.round(liters * 10) / 10,
     fuelAmount: Math.round(fuelAmount),
+    personalFuelCost: Math.round(personalFuelCost),
     royaltyAmount: Math.round(royaltyAmount),
     usageAmount: Math.round(fuelAmount + royaltyAmount),
     stoppageMin,
@@ -689,21 +793,45 @@ export function daySummary(state: AppState, day: DialaDay, pump: Pump): DaySumma
 
 export interface UsageDraft {
   minutes: number;
+  /** الساعات الفعلية (من الأوقات الفعلية فقط — لا من نسبة السهم) */
+  hours: number;
   crossesMidnight: boolean;
   fuelPerHourSnapshot: number;
   fuelLiters: number;
+  /** السعر المرجعي للمضخة وقت العملية */
   fuelPriceSnapshot: number;
+  /** السعر الشخصي الذي سجّله المستخدم (0 = لم يُسجَّل فيُستخدم المرجعي) */
+  personalFuelPriceSnapshot: number;
+  /** تكلفة الديزل باللترات × السعر المستخدم */
+  fuelCost: number;
   fuelAmountDue: number;
   royaltyHourlySnapshot: number;
   royaltyAmountDue: number;
+  /** دقائق توقف المضخة داخل فترة هذه العملية */
+  stoppageMin: number;
 }
 
+export interface UsageDraftOptions {
+  /** سعر الديزل الذي يسجّله المستخدم لهذه العملية (§9) */
+  personalFuelPrice?: number;
+  royaltyProrate?: boolean;
+  /** دقائق التوقف الداخلة في الفترة — تُمرَّر من المخزن بعد حسابها */
+  stoppageMin?: number;
+}
+
+/**
+ * حساب العملية (§6, §9, §10, §17):
+ * الساعات من الأوقات الفعلية فقط (مع عبور منتصف الليل)،
+ * واللترات = الساعات × استهلاك المضخة في الساعة،
+ * والتكلفة = اللترات × السعر الشخصي إن سجّله المستخدم وإلا السعر المرجعي.
+ * كل هذه القيم تُحفظ كـ Snapshot داخل العملية ولا تتأثر بتغيّر الإعدادات لاحقًا.
+ */
 export function computeUsageDraft(
   pump: Pump,
   day: DialaDay,
   startTime: string,
   endTime: string,
-  royaltyProrate = true
+  opts: UsageDraftOptions = {}
 ): UsageDraft {
   const minutes = durationMin(startTime, endTime);
   const window = pumpWindow(pump, day);
@@ -716,24 +844,32 @@ export function computeUsageDraft(
           ? Math.round(pump.fuelPerCycle * (minutes / window.capacityMin) * 100) / 100
           : 0
         : Math.round(hours * pump.fuelConsumptionPerHour * 100) / 100;
-  const fuelPrice = pump.fuelPrice || 0;
+  const referencePrice = pump.fuelPrice || 0;
+  const personalPrice = Math.max(0, opts.personalFuelPrice ?? 0);
+  /** السعر المستخدم للعملية: السعر الشخصي أولًا، والمرجعي بديلًا (§9) */
+  const usedPrice = personalPrice > 0 ? personalPrice : referencePrice;
+  const fuelCost = Math.round(liters * usedPrice);
   const royalty =
     !pump.royaltyEnabled
       ? 0
       : pump.royaltyMode === "hour"
         ? Math.round(hours * pump.royaltyPerHour)
-        : royaltyProrate && window.capacityMin > 0
+        : (opts.royaltyProrate ?? true) && window.capacityMin > 0
           ? Math.round(pump.royaltyPerCycle * (minutes / window.capacityMin))
           : 0;
   return {
     minutes,
+    hours,
     crossesMidnight: isOvernight(startTime, endTime),
     fuelPerHourSnapshot: pump.fuelConsumptionPerHour,
     fuelLiters: liters,
-    fuelPriceSnapshot: fuelPrice,
-    fuelAmountDue: Math.round(liters * fuelPrice),
+    fuelPriceSnapshot: referencePrice,
+    personalFuelPriceSnapshot: personalPrice,
+    fuelCost,
+    fuelAmountDue: fuelCost,
     royaltyHourlySnapshot: pump.royaltyMode === "hour" ? pump.royaltyPerHour : pump.royaltyPerCycle,
     royaltyAmountDue: royalty,
+    stoppageMin: Math.max(0, Math.round(opts.stoppageMin ?? 0)),
   };
 }
 
@@ -1374,6 +1510,558 @@ export function isoRangeDays(fromISO: string, toISO: string): string[] {
     guard += 1;
   }
   return out;
+}
+
+/* --------------- التوقفات والتقاطع مع استخدام فعلي (§7, §22) ------------ */
+
+/** دقائق توقفات المضخة المتقاطعة مع فترة [startTime → endTime] */
+export function stoppageMinutesInRange(
+  state: AppState,
+  dayId: string,
+  startTime: string,
+  endTime: string,
+  anchorMin: number,
+  capacityMin: number
+): number {
+  const target = entryInterval(anchorMin, startTime, endTime, capacityMin);
+  let total = 0;
+  for (const s of state.stoppages) {
+    if (s.archived || s.dayId !== dayId) continue;
+    const span = entryInterval(anchorMin, s.startTime, s.endTime, capacityMin);
+    total += rangesOverlap(target, span);
+  }
+  return Math.round(total);
+}
+
+export interface UsageOverlap {
+  usageId: string;
+  personId: string;
+  personName: string;
+  startTime: string;
+  endTime: string;
+  /** مقدار التداخل بالدقائق */
+  minutes: number;
+}
+
+/**
+ * كشف تداخل فترة جديدة مع الاستخدامات المسجّلة في اليوم (§7).
+ * لا يحذف ولا يعدّل أي سجل — يعيد قائمة التعارضات للعرض والتأكيد فقط.
+ */
+export function overlapsFor(
+  state: AppState,
+  day: DialaDay,
+  pump: Pump,
+  startTime: string,
+  endTime: string,
+  ignoreUsageId: string | null = null
+): UsageOverlap[] {
+  const window = pumpWindow(pump, day);
+  const anchor = timeToMinutes(window.start);
+  const candidate = entryInterval(anchor, startTime, endTime, window.capacityMin);
+  const out: UsageOverlap[] = [];
+  for (const u of state.usages) {
+    if (u.dayId !== day.id || u.status !== "active" || u.id === ignoreUsageId) continue;
+    const span = entryInterval(anchor, u.startTime, u.endTime, window.capacityMin);
+    const overlap = Math.round(rangesOverlap(candidate, span));
+    if (overlap > 0) {
+      out.push({
+        usageId: u.id,
+        personId: u.personId,
+        personName: personName(state, u.personId),
+        startTime: u.startTime,
+        endTime: u.endTime,
+        minutes: overlap,
+      });
+    }
+  }
+  return out;
+}
+
+export interface CapacityBreakdown {
+  /** مجموع الاستخدام الفعلي (اختياريًا مع فترة قيد التسجيل) */
+  usageTotalMin: number;
+  plannedTotalMin: number;
+  capacityMin: number;
+  stoppageMin: number;
+  effectiveMin: number;
+  overMin: number;
+  over: boolean;
+  overReasons: string[];
+  liters: number;
+  currency?: string;
+}
+
+/** تفصيل الطاقة والساعات والتجاوز قبل الحفظ (§8) */
+export function capacityBreakdown(
+  state: AppState,
+  day: DialaDay,
+  pump: Pump,
+  extraMinutes = 0,
+  ignoreUsageId: string | null = null
+): CapacityBreakdown {
+  const window = pumpWindow(pump, day);
+  const usages = state.usages.filter(
+    (u) => u.dayId === day.id && u.status === "active" && u.id !== ignoreUsageId
+  );
+  const usageTotalMin = usages.reduce((s, u) => s + u.minutes, 0) + extraMinutes;
+  const plannedTotalMin = dayEntries(state, day.id)
+    .filter((e) => e.status !== "cancelled")
+    .reduce((s, e) => s + entryMinutes(e), 0);
+  const stoppageMin = state.stoppages
+    .filter((s) => s.dayId === day.id && !s.archived)
+    .reduce((s, st) => s + st.minutes, 0);
+  const effectiveMin = Math.max(0, window.capacityMin - stoppageMin);
+  return {
+    usageTotalMin,
+    plannedTotalMin,
+    capacityMin: window.capacityMin,
+    stoppageMin,
+    effectiveMin,
+    overMin: Math.max(0, usageTotalMin - effectiveMin),
+    over: usageTotalMin > effectiveMin + 1,
+    overReasons: usages.map((u) => u.overCapacityReason).filter(Boolean),
+    liters: Math.round(usages.reduce((s, u) => s + u.fuelLiters, 0) * 10) / 10,
+    currency: pump.currency,
+  };
+}
+
+/** تكلفة الديزل المحفوظة داخل العملية (Snapshot) */
+export function usageFuelCost(u: ActualUsage): number {
+  return Math.round(u.fuelCost ?? u.fuelAmountDue ?? 0);
+}
+
+/** هل سجّل المستخدم سعرًا شخصيًا لهذه العملية؟ */
+export function hasPersonalFuelPrice(u: ActualUsage): boolean {
+  return (u.personalFuelPriceSnapshot ?? 0) > 0;
+}
+
+/* ------------------ الدفعات والديون (§12, §13) ------------------------- */
+
+export function debtsOf(state: AppState, personId: string): Debt[] {
+  return state.debts
+    .filter((d) => d.debtorId === personId && d.status !== "cancelled")
+    .slice()
+    .sort((a, b) => (a.date < b.date ? 1 : -1));
+}
+
+export function allDebts(state: AppState): Debt[] {
+  return state.debts
+    .filter((d) => d.status !== "cancelled")
+    .slice()
+    .sort((a, b) => (a.date < b.date ? 1 : -1));
+}
+
+export function openDebts(state: AppState): Debt[] {
+  return allDebts(state).filter((d) => d.remainingAmount > 0);
+}
+
+export function debtRemaining(debt: Debt): number {
+  return Math.max(0, Math.round((debt.amount || 0) - (debt.paidAmount || 0)));
+}
+
+/** حالة الدين من مبالغه — تُخزَّن أيضًا لتسهيل العرض */
+export function debtStatusOf(debt: Debt): DebtStatus {
+  if (debt.status === "cancelled") return "cancelled";
+  const remaining = debtRemaining(debt);
+  if (remaining <= 0) return "paid";
+  if ((debt.paidAmount || 0) > 0) return "partially_paid";
+  return "unpaid";
+}
+
+export function debtStatusLabel(s: DebtStatus): string {
+  switch (s) {
+    case "paid":
+      return "مسدَّد";
+    case "partially_paid":
+      return "مسدَّد جزئيًا";
+    case "cancelled":
+      return "ملغى";
+    default:
+      return "غير مسدَّد";
+  }
+}
+
+export function debtStatusTone(s: DebtStatus): "green" | "amber" | "red" | "gray" {
+  switch (s) {
+    case "paid":
+      return "green";
+    case "partially_paid":
+      return "amber";
+    case "cancelled":
+      return "gray";
+    default:
+      return "red";
+  }
+}
+
+export function paymentsOf(state: AppState, personId: string): Payment[] {
+  return state.payments
+    .filter((p) => p.personId === personId && p.status !== "void")
+    .slice()
+    .sort((a, b) => (a.date < b.date ? 1 : -1));
+}
+
+export function allPayments(state: AppState): Payment[] {
+  return state.payments
+    .filter((p) => p.status !== "void")
+    .slice()
+    .sort((a, b) => (a.date < b.date ? 1 : -1));
+}
+
+export function paymentsForDebt(state: AppState, debtId: string): Payment[] {
+  return state.payments.filter(
+    (p) => p.linkedOperationType === "debt" && p.linkedOperationId === debtId && p.status !== "void"
+  );
+}
+
+export function paymentMethodLabel(m: PaymentMethod): string {
+  switch (m) {
+    case "cash":
+      return "نقدًا";
+    case "transfer":
+      return "حوالة";
+    case "credit_note":
+      return "قيد";
+    case "in_kind":
+      return "عينيًا";
+    default:
+      return "أخرى";
+  }
+}
+
+export function paymentTypeLabel(t: PaymentType): string {
+  switch (t) {
+    case "debt":
+      return "سداد دين";
+    case "fuel":
+      return "ديزل";
+    case "royalty":
+      return "رواسة";
+    case "attendants":
+      return "أجور الرواس";
+    case "rights":
+      return "حق/تأجير";
+    case "loan":
+      return "سلفة";
+    default:
+      return "أخرى";
+  }
+}
+
+export const PAYMENT_METHOD_OPTIONS: { id: PaymentMethod; label: string }[] = [
+  { id: "cash", label: "نقدًا" },
+  { id: "transfer", label: "حوالة" },
+  { id: "credit_note", label: "قيد" },
+  { id: "in_kind", label: "عينيًا" },
+  { id: "other", label: "أخرى" },
+];
+
+export const PAYMENT_TYPE_OPTIONS: { id: PaymentType; label: string }[] = [
+  { id: "debt", label: "سداد دين" },
+  { id: "fuel", label: "ديزل" },
+  { id: "royalty", label: "رواسة" },
+  { id: "attendants", label: "أجور الرواس" },
+  { id: "rights", label: "حق / تأجير" },
+  { id: "loan", label: "سلفة" },
+  { id: "other", label: "أخرى" },
+];
+
+export interface PersonMoneySummary {
+  debtTotal: number;
+  debtPaid: number;
+  debtRemaining: number;
+  openDebts: number;
+  paidDebts: number;
+  paymentsTotal: number;
+  paymentsCount: number;
+}
+
+/** ملخص مالي من سجلات الديون والدفعات المستقلة */
+export function personMoneySummary(state: AppState, personId: string): PersonMoneySummary {
+  const debts = state.debts.filter((d) => d.debtorId === personId && d.status !== "cancelled");
+  const payments = paymentsOf(state, personId);
+  const debtTotal = debts.reduce((s, d) => s + (d.amount || 0), 0);
+  const debtPaid = debts.reduce((s, d) => s + (d.paidAmount || 0), 0);
+  return {
+    debtTotal,
+    debtPaid,
+    debtRemaining: Math.max(0, debtTotal - debtPaid),
+    openDebts: debts.filter((d) => debtRemaining(d) > 0).length,
+    paidDebts: debts.filter((d) => debtRemaining(d) <= 0).length,
+    paymentsTotal: payments.reduce((s, p) => s + (p.amount || 0), 0),
+    paymentsCount: payments.length,
+  };
+}
+
+/* ------------- السلف والإعارة والتحويل وتقديم الدور (§14) -------------- */
+
+export function transferTypeLabel(t: TransferType): string {
+  switch (t) {
+    case "loan":
+      return "إعارة ساعات (سلفت)";
+    case "borrow":
+      return "استلاف ساعات (تسلفت)";
+    case "transfer":
+      return "تحويل حق/ساعات";
+    case "advance":
+      return "ساعات مقدمة";
+    case "postpone":
+      return "تأخير الدور";
+    case "gift":
+      return "هبة";
+    default:
+      return "إعادة";
+  }
+}
+
+export const TRANSFER_TYPE_OPTIONS: { id: TransferType; label: string }[] = [
+  { id: "loan", label: "إعارة ساعات (سلفت)" },
+  { id: "borrow", label: "استلاف ساعات (تسلفت)" },
+  { id: "transfer", label: "تحويل حق / ساعات" },
+  { id: "advance", label: "ساعات مقدمة" },
+  { id: "postpone", label: "تأخير الدور" },
+  { id: "gift", label: "هبة" },
+  { id: "return", label: "إعادة ساعات" },
+];
+
+export function transferEventsOf(state: AppState, personId: string): TransferEvent[] {
+  return state.transferEvents
+    .filter((t) => t.fromPersonId === personId || t.toPersonId === personId)
+    .slice()
+    .sort((a, b) => (a.date < b.date ? 1 : -1));
+}
+
+export function allTransferEvents(state: AppState): TransferEvent[] {
+  return state.transferEvents.slice().sort((a, b) => (a.date < b.date ? 1 : -1));
+}
+
+/** رصيد السلف/الاستلافات لشخص (بالدقائق) */
+export function transferBalanceMinutes(state: AppState, personId: string): number {
+  let balance = 0;
+  for (const t of state.transferEvents) {
+    if (t.status === "cancelled") continue;
+    if (t.type === "loan" || t.type === "gift") {
+      if (t.fromPersonId === personId) balance += t.minutes;
+      if (t.toPersonId === personId) balance -= t.minutes;
+    } else if (t.type === "borrow") {
+      if (t.toPersonId === personId) balance -= t.minutes;
+    } else {
+      if (t.fromPersonId === personId) balance += t.minutes;
+      if (t.toPersonId === personId) balance -= t.minutes;
+    }
+  }
+  return Math.round(balance);
+}
+
+/* ------------------ التعارضات المحفوظة (§18) --------------------------- */
+
+export type DetectedConflict = Omit<
+  Conflict,
+  | "id"
+  | "status"
+  | "createdAt"
+  | "resolvedAt"
+  | "resolvedBy"
+  | "resolution"
+  | "pumpId"
+>;
+
+/**
+ * كشف التعارضات من البيانات الحالية: الرسمي مقابل الشخصي، التداخل، التجاوز، والتكرار.
+ * الكشف لا يعدّل أي سجل — ينتج قائمة تُحفظ ثم تُحلّ يدويًا.
+ */
+export function detectConflicts(state: AppState): DetectedConflict[] {
+  const pump = state.pump;
+  const out: DetectedConflict[] = [];
+  if (!pump) return out;
+
+  for (const person of state.persons) {
+    const comparison = comparePerson(state, person.id);
+    for (const row of comparison.rows) {
+      if (row.status === "matched" || row.status === "settled") continue;
+      const officialUsageIds = row.dayId
+        ? state.usages
+            .filter((u) => u.dayId === row.dayId && u.personId === person.id && u.status === "active")
+            .map((u) => u.id)
+        : [];
+      const personalIds = state.personalRecords
+        .filter((p) => p.personId === person.id && p.date === row.date && !p.archived)
+        .map((p) => p.id);
+      out.push({
+        type: "official_personal",
+        key: `${person.id}|${row.date}|minutes`,
+        dayId: row.dayId,
+        personId: person.id,
+        officialRecordId: officialUsageIds[0] ?? null,
+        personalRecordId: personalIds[0] ?? null,
+        officialValue: `${toHours(row.officialMinutes)} ساعة · ${row.officialAmount} مبلغ`,
+        personalValue: `${toHours(row.personalMinutes)} ساعة · ${row.personalAmount} مبلغ`,
+        difference: `${toHours(Math.abs(row.minutesDiff))} ساعة · ${Math.abs(row.amountDiff)} مبلغ`,
+        differenceValue: row.minutesDiff,
+        unit: "minutes",
+        notes: "عرض فقط — لا يُعدَّل أي سجل تلقائيًا",
+      });
+    }
+  }
+
+  for (const day of state.days.filter((d) => !d.archived)) {
+    const usages = state.usages.filter((u) => u.dayId === day.id && u.status === "active");
+    const window = pumpWindow(pump, day);
+    const anchor = timeToMinutes(window.start);
+    for (let i = 0; i < usages.length; i++) {
+      for (let j = i + 1; j < usages.length; j++) {
+        const a = usages[i];
+        const b = usages[j];
+        const spanA = entryInterval(anchor, a.startTime, a.endTime, window.capacityMin);
+        const spanB = entryInterval(anchor, b.startTime, b.endTime, window.capacityMin);
+        const overlap = Math.round(rangesOverlap(spanA, spanB));
+        if (overlap > 0) {
+          out.push({
+            type: "overlap",
+            key: `${day.id}|overlap|${a.id}|${b.id}`,
+            dayId: day.id,
+            personId: a.personId,
+            officialRecordId: a.id,
+            personalRecordId: null,
+            officialValue: `${personName(state, a.personId)}: ${a.startTime} → ${a.endTime}`,
+            personalValue: `${personName(state, b.personId)}: ${b.startTime} → ${b.endTime}`,
+            difference: `${overlap} دقيقة تداخل`,
+            differenceValue: -overlap,
+            unit: "minutes",
+            notes: "تداخل بين استخدامين فعليين — لم يُحذف أي سجل",
+          });
+        }
+      }
+    }
+
+    const usageTotal = usages.reduce((s, u) => s + u.minutes, 0);
+    const stoppageMin = state.stoppages
+      .filter((s) => s.dayId === day.id && !s.archived)
+      .reduce((s, st) => s + st.minutes, 0);
+    const effectiveMin = Math.max(0, window.capacityMin - stoppageMin);
+    if (usageTotal > effectiveMin + 1) {
+      out.push({
+        type: "over_capacity",
+        key: `${day.id}|capacity`,
+        dayId: day.id,
+        personId: null,
+        officialRecordId: null,
+        personalRecordId: null,
+        officialValue: `ساعات المضخة المتاحة: ${toHours(effectiveMin)}`,
+        personalValue: `إجمالي الاستخدام الفعلي: ${toHours(usageTotal)}`,
+        difference: `${toHours(usageTotal - effectiveMin)} ساعة تجاوز`,
+        differenceValue: -(usageTotal - effectiveMin),
+        unit: "minutes",
+        notes: "تجاوز موثّق — البيانات محفوظة كما هي",
+      });
+    }
+
+    const byPerson = new Map<string, number>();
+    for (const u of usages) byPerson.set(u.personId, (byPerson.get(u.personId) ?? 0) + 1);
+    for (const [personId, count] of byPerson) {
+      if (count > 1) {
+        out.push({
+          type: "duplicate",
+          key: `${day.id}|dup|${personId}`,
+          dayId: day.id,
+          personId,
+          officialRecordId: null,
+          personalRecordId: null,
+          officialValue: `${personName(state, personId)}: ${count} سجلات في نفس اليوم`,
+          personalValue: "",
+          difference: `${count - 1} سجل إضافي`,
+          differenceValue: count - 1,
+          unit: "count",
+          notes: "تكرار محتمل — يبقى القرار للمسؤول",
+        });
+      }
+    }
+  }
+
+  return out;
+}
+
+/**
+ * دمج التعارضات المكتشفة مع المحفوظة: لا يُحذف أي تعارض سابق،
+ * ولا يُعاد فتح تعارض حُلّ أو أُهمل (§18).
+ */
+export function mergeConflicts(
+  existing: Conflict[],
+  detected: DetectedConflict[],
+  pumpId: string
+): Conflict[] {
+  const byKey = new Map(existing.map((c) => [c.key, c]));
+  const at = new Date().toISOString();
+  const out = existing.slice();
+  for (const d of detected) {
+    const prev = byKey.get(d.key);
+    if (!prev) {
+      const created: Conflict = {
+        ...d,
+        pumpId,
+        id: uid("cf"),
+        status: "open",
+        createdAt: at,
+        resolvedAt: "",
+        resolvedBy: "",
+        resolution: "",
+      };
+      out.push(created);
+      byKey.set(d.key, created);
+      continue;
+    }
+    if (prev.status === "resolved" || prev.status === "ignored") continue;
+    const index = out.findIndex((c) => c.id === prev.id);
+    if (index >= 0) {
+      out[index] = {
+        ...prev,
+        officialValue: d.officialValue,
+        personalValue: d.personalValue,
+        difference: d.difference,
+        differenceValue: d.differenceValue,
+        officialRecordId: d.officialRecordId ?? prev.officialRecordId,
+        personalRecordId: d.personalRecordId ?? prev.personalRecordId,
+        notes: d.notes || prev.notes,
+      };
+    }
+  }
+  return out;
+}
+
+export function conflictsOf(state: AppState, personId: string): Conflict[] {
+  return state.conflicts.filter((c) => c.personId === personId);
+}
+
+export function openConflicts(state: AppState): Conflict[] {
+  return state.conflicts.filter((c) => c.status === "open" || c.status === "under_review");
+}
+
+export function conflictTypeLabel(t: ConflictKind): string {
+  switch (t) {
+    case "overlap":
+      return "تداخل أوقات";
+    case "over_capacity":
+      return "تجاوز الساعات";
+    case "duplicate":
+      return "تكرار";
+    case "official_personal":
+      return "رسمي مقابل شخصي";
+    default:
+      return "علاقة غير مؤكدة";
+  }
+}
+
+export function conflictStatusLabel(s: ConflictStatus): string {
+  switch (s) {
+    case "resolved":
+      return "محلول";
+    case "ignored":
+      return "مُهمل";
+    case "under_review":
+      return "قيد المراجعة";
+    default:
+      return "قائم";
+  }
 }
 
 export { rawDurationMin, timeInterval };

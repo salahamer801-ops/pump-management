@@ -12,19 +12,30 @@ import {
   Wrench,
 } from "lucide-react";
 import { useApp } from "../../store";
-import type { Settlement, Transaction } from "../../domain/types";
+import type {
+  Conflict,
+  ConflictStatus,
+  Person,
+  PersonalRecord,
+  Settlement,
+  Transaction,
+} from "../../domain/types";
 import {
   comparePerson,
+  conflictStatusLabel,
+  conflictTypeLabel,
   daySummary,
   dialaDayLabel,
   findPerson,
   matchStatusLabel,
+  openConflicts,
   personName,
   pumpFinancials,
   scheduleRows,
   sortedDays,
 } from "../../domain/rules";
 import {
+  durationMin,
   formatDuration,
   formatClock,
   isoToShort,
@@ -34,7 +45,20 @@ import {
   uid,
 } from "../../domain/util";
 import { formatMoney, formatNumber } from "../../format";
-import { Button, Card, Field, Modal, NumberInput, Pill, Select, TextArea, cx } from "../../components/ui";
+import {
+  Button,
+  Card,
+  Field,
+  Modal,
+  NumberInput,
+  Pill,
+  Select,
+  TextArea,
+  TextInput,
+  TimeInput,
+  cx,
+} from "../../components/ui";
+import PersonPicker from "../../components/PersonPicker";
 
 type Tab = "reports" | "differences" | "audit";
 
@@ -281,6 +305,14 @@ function DifferencesTab() {
   const { state, actions } = useApp();
   const pump = state.pump!;
   const [settleFor, setSettleFor] = useState<{ personId: string; rowIndex: number } | null>(null);
+  const [conflictFor, setConflictFor] = useState<Conflict | null>(null);
+  const [personalOpen, setPersonalOpen] = useState(false);
+  const conflicts = state.conflicts.slice().sort((a, b) => {
+    const rank = (c: Conflict) =>
+      c.status === "open" ? 0 : c.status === "under_review" ? 1 : c.status === "resolved" ? 2 : 3;
+    return rank(a) - rank(b);
+  });
+  const openCount = openConflicts(state).length;
   const persons = state.persons.filter((p) => !p.archived);
   const comparisons = persons
     .map((p) => ({ person: p, comparison: comparePerson(state, p.id) }))
@@ -292,17 +324,79 @@ function DifferencesTab() {
 
   return (
     <div className="space-y-4">
-      <Card className="p-4">
+      <Card className="p-4" data-testid="conflicts-panel">
         <div className="flex items-center gap-2">
           <Scale size={16} className="text-emerald-600" />
           <h2 className="text-sm font-extrabold text-gray-800 dark:text-white">
             السجل الرسمي مقابل السجل الشخصي
           </h2>
-          <Pill tone={totalDifferences > 0 ? "amber" : "green"}>{totalDifferences} اختلاف</Pill>
+          <Pill tone={openCount > 0 ? "amber" : "green"}>{openCount} تعارض قائم</Pill>
         </div>
         <p className="mt-2 text-[11px] leading-relaxed text-gray-400">
           النظام لا يحل التعارض تلقائيًا ولا يحذف أي سجل — يكشف الاختلاف ويعرض السجلين ثم يسمح بتسوية موثّقة.
         </p>
+
+        <div className="mt-3 space-y-2">
+          {conflicts.length === 0 ? (
+            <p className="py-3 text-center text-xs text-gray-400">
+              لا توجد تعارضات محفوظة — تُكتشف تلقائيًا عند وجود اختلاف بين السجلين أو تداخل أو تجاوز.
+            </p>
+          ) : (
+            conflicts.map((c) => (
+              <div
+                key={c.id}
+                className={cx(
+                  "rounded-2xl border px-3 py-2 text-[11px]",
+                  c.status === "open"
+                    ? "border-amber-200 bg-amber-50 dark:border-amber-900/40 dark:bg-amber-900/20"
+                    : c.status === "resolved"
+                      ? "border-emerald-200 bg-emerald-50/70 dark:border-emerald-900/40 dark:bg-emerald-900/20"
+                      : "border-gray-200 bg-gray-50 dark:border-slate-700 dark:bg-slate-700/40"
+                )}
+              >
+                <div className="flex flex-wrap items-center gap-2">
+                  <Pill tone={c.status === "resolved" ? "green" : c.status === "open" ? "amber" : "gray"}>
+                    {conflictStatusLabel(c.status)}
+                  </Pill>
+                  <span className="font-extrabold text-gray-800 dark:text-white">
+                    {conflictTypeLabel(c.type)}
+                  </span>
+                  {c.personId ? (
+                    <span className="text-gray-500 dark:text-slate-300">{personName(state, c.personId)}</span>
+                  ) : null}
+                  {c.dayId ? (
+                    <span className="text-gray-400">
+                      {isoToShort(state.days.find((d) => d.id === c.dayId)?.date ?? "")}
+                    </span>
+                  ) : null}
+                  <button
+                    onClick={() => setConflictFor(c)}
+                    className="mr-auto rounded-xl bg-white px-2 py-1 font-bold text-emerald-700 dark:bg-slate-800 dark:text-emerald-300"
+                  >
+                    {c.status === "resolved" ? "تفاصيل القرار" : "مراجعة / قرار"}
+                  </button>
+                </div>
+                <div className="mt-1 grid gap-0.5 text-gray-600 dark:text-slate-300">
+                  <span>السجل الرسمي: {c.officialValue || "—"}</span>
+                  <span>السجل الشخصي: {c.personalValue || "—"}</span>
+                  <span className="font-bold text-amber-700 dark:text-amber-300">الفرق: {c.difference}</span>
+                  {c.resolution ? (
+                    <span className="text-emerald-700 dark:text-emerald-300">
+                      القرار: {c.resolution} {c.resolvedBy ? `— ${c.resolvedBy}` : ""}
+                    </span>
+                  ) : null}
+                </div>
+              </div>
+            ))
+          )}
+        </div>
+
+        <div className="mt-3 flex flex-wrap gap-2">
+          <Button variant="secondary" className="px-3 py-1.5 text-[11px]" onClick={() => setPersonalOpen(true)}>
+            + تسجيل سجل شخصي (من المستخدم)
+          </Button>
+          <Pill tone="gray">{totalDifferences} اختلاف في المقارنة المباشرة</Pill>
+        </div>
       </Card>
 
       {comparisons.length === 0 ? (
@@ -385,7 +479,219 @@ function DifferencesTab() {
           }}
         />
       ) : null}
+
+      {conflictFor ? (
+        <ConflictResolveModal conflict={conflictFor} onClose={() => setConflictFor(null)} />
+      ) : null}
+
+      {personalOpen ? <PersonalRecordModal onClose={() => setPersonalOpen(false)} /> : null}
     </div>
+  );
+}
+
+/** قرار على تعارض محفوظ — لا يعدّل أي سجل رسمي أو شخصي */
+function ConflictResolveModal({
+  conflict,
+  onClose,
+}: {
+  conflict: Conflict;
+  onClose: () => void;
+}) {
+  const { state, actions } = useApp();
+  const [status, setStatus] = useState<ConflictStatus>(conflict.status);
+  const [resolution, setResolution] = useState(conflict.resolution);
+  const [notes, setNotes] = useState(conflict.notes);
+  const [actor, setActor] = useState("المسؤول");
+
+  return (
+    <Modal open onClose={onClose} title={`مراجعة تعارض — ${conflictTypeLabel(conflict.type)}`}>
+      <div className="space-y-3">
+        <div className="rounded-2xl bg-gray-50 px-3 py-3 text-[11px] dark:bg-slate-700">
+          <Row label="السجل الرسمي" value={conflict.officialValue || "—"} />
+          <Row label="السجل الشخصي" value={conflict.personalValue || "—"} />
+          <Row label="الفرق" value={conflict.difference} tone="amber" />
+          <Row label="تاريخ الكشف" value={formatClock(conflict.createdAt)} />
+          {conflict.personId ? <Row label="الشخص" value={personName(state, conflict.personId)} /> : null}
+        </div>
+
+        <Field label="الحالة">
+          <Select value={status} onChange={(e) => setStatus(e.target.value as ConflictStatus)}>
+            <option value="open">قائم</option>
+            <option value="under_review">قيد المراجعة</option>
+            <option value="resolved">محلول</option>
+            <option value="ignored">مُهمل</option>
+          </Select>
+        </Field>
+        <Field label="القرار" hint="مثال: اعتماد السجل الرسمي · اعتماد الشخصي · اعتماد قيمة متوسطة">
+          <TextInput value={resolution} onChange={(e) => setResolution(e.target.value)} />
+        </Field>
+        <Field label="ملاحظات">
+          <TextArea value={notes} onChange={(e) => setNotes(e.target.value)} rows={2} />
+        </Field>
+        <Field label="من يتخذ القرار">
+          <TextInput value={actor} onChange={(e) => setActor(e.target.value)} />
+        </Field>
+
+        <Button
+          className="w-full"
+          onClick={() => {
+            actions.resolveConflict(conflict.id, status, resolution, notes, actor);
+            onClose();
+          }}
+        >
+          <ShieldCheck size={16} /> حفظ القرار
+        </Button>
+        <p className="text-[10px] leading-relaxed text-gray-400">
+          تغيير الحالة أو القرار لا يمسّ السجل الرسمي ولا الشخصي — يُحفظ القرار بمن اتخذه ومتى.
+        </p>
+      </div>
+    </Modal>
+  );
+}
+
+/** السجل الشخصي: إدخال مستقل عن السجل الرسمي (§19) ولا يعدّله */
+function PersonalRecordModal({ onClose }: { onClose: () => void }) {
+  const { state, actions } = useApp();
+  const pump = state.pump!;
+  const [person, setPerson] = useState<Person | null>(null);
+  const [picking, setPicking] = useState(false);
+  const [date, setDate] = useState(todayISO());
+  const [startTime, setStartTime] = useState("08:00");
+  const [endTime, setEndTime] = useState("11:00");
+  const [minutes, setMinutes] = useState(180);
+  const [liters, setLiters] = useState(0);
+  const [price, setPrice] = useState(0);
+  const [royalty, setRoyalty] = useState(0);
+  const [paid, setPaid] = useState(0);
+  const [notes, setNotes] = useState("");
+  const [useClock, setUseClock] = useState(true);
+
+  const computedMinutes = useClock ? durationMin(startTime, endTime) : minutes;
+  const dieselLiters = liters > 0 ? liters : 0;
+  const dieselAmount = Math.round(dieselLiters * (price || 0));
+  const debtAmount = Math.max(0, dieselAmount + royalty - paid);
+
+  return (
+    <Modal open onClose={onClose} title="تسجيل سجل شخصي">
+      <div className="space-y-3">
+        <Field label="الشخص">
+          <button
+            onClick={() => setPicking(true)}
+            className="w-full rounded-2xl border border-gray-200 bg-gray-50 px-4 py-3 text-right text-sm font-bold text-gray-800 dark:border-slate-600 dark:bg-slate-700 dark:text-white"
+          >
+            {person ? person.name : "اختيار الشخص"}
+          </button>
+        </Field>
+
+        <Field label="التاريخ">
+          <TextInput type="date" value={date} onChange={(e) => setDate(e.target.value)} />
+        </Field>
+
+        <label className="flex items-center justify-between rounded-2xl bg-gray-50 px-3 py-2 text-[11px] font-bold dark:bg-slate-700">
+          <span>تحديد الساعات بالوقت الفعلي (يدعم عبور منتصف الليل)</span>
+          <input
+            type="checkbox"
+            checked={useClock}
+            onChange={(e) => setUseClock(e.target.checked)}
+            className="h-5 w-5 accent-emerald-600"
+          />
+        </label>
+
+        {useClock ? (
+          <div className="grid grid-cols-2 gap-3">
+            <Field label="البداية">
+              <TimeInput value={startTime} onChange={(e) => setStartTime(e.target.value)} />
+            </Field>
+            <Field label="النهاية">
+              <TimeInput value={endTime} onChange={(e) => setEndTime(e.target.value)} />
+            </Field>
+          </div>
+        ) : (
+          <Field label="عدد الدقائق">
+            <NumberInput value={minutes} onChange={(e) => setMinutes(Number(e.target.value))} />
+          </Field>
+        )}
+
+        <div className="grid grid-cols-3 gap-3">
+          <Field label="اللترات">
+            <NumberInput value={liters} onChange={(e) => setLiters(Number(e.target.value))} />
+          </Field>
+          <Field label="سعر اللتر الشخصي">
+            <NumberInput value={price} onChange={(e) => setPrice(Number(e.target.value))} />
+          </Field>
+          <Field label="الرواسة">
+            <NumberInput value={royalty} onChange={(e) => setRoyalty(Number(e.target.value))} />
+          </Field>
+        </div>
+
+        <div className="grid grid-cols-2 gap-3">
+          <Field label="المدفوع">
+            <NumberInput value={paid} onChange={(e) => setPaid(Number(e.target.value))} />
+          </Field>
+          <Field label="المتبقي (دين)">
+            <TextInput value={debtAmount} readOnly dir="ltr" className="text-left" />
+          </Field>
+        </div>
+
+        <div className="rounded-2xl bg-gray-50 px-3 py-2 text-[11px] dark:bg-slate-700">
+          <Row label="المدة المحسوبة" value={formatDuration(computedMinutes)} />
+          <Row label="تكلفة الديزل" value={formatMoney(dieselAmount, pump.currency)} />
+          <Row label="المتبقي" value={formatMoney(debtAmount, pump.currency)} tone="amber" />
+        </div>
+
+        <Field label="ملاحظات">
+          <TextArea value={notes} onChange={(e) => setNotes(e.target.value)} rows={2} />
+        </Field>
+
+        <Button
+          className="w-full"
+          disabled={!person || computedMinutes <= 0}
+          onClick={() => {
+            if (!person) return;
+            const day = state.days.find((d) => d.date === date && !d.archived) ?? null;
+            const record: PersonalRecord = {
+              id: uid("pr"),
+              personId: person.id,
+              pumpId: pump.id,
+              dayId: day?.id ?? null,
+              date,
+              startTime: useClock ? startTime : "",
+              endTime: useClock ? endTime : "",
+              minutes: computedMinutes,
+              dieselLiters,
+              dieselPricePerLiter: price,
+              dieselAmount,
+              royaltyAmount: royalty,
+              paidAmount: paid,
+              debtAmount,
+              operationType: "usage",
+              notes,
+              matchStatus: "personal_only",
+              source: "manager",
+              createdAt: new Date().toISOString(),
+              createdBy: "manager",
+              fuelConsumptionPerHourSnapshot: pump.fuelConsumptionPerHour,
+            };
+            actions.savePersonal(record, true);
+            onClose();
+          }}
+        >
+          <ShieldCheck size={16} /> حفظ السجل الشخصي
+        </Button>
+        <p className="text-[10px] leading-relaxed text-gray-400">
+          السجل الشخصي لا يعدّل السجل الرسمي — يظهر بجانبه في المقارنة، ويرفع تعارضًا إن اختلف.
+        </p>
+      </div>
+      {picking ? (
+        <PersonPicker
+          open
+          onClose={() => setPicking(false)}
+          pumpId={pump.id}
+          title="اختيار الشخص"
+          onSelect={(p) => setPerson(p)}
+        />
+      ) : null}
+    </Modal>
   );
 }
 
@@ -513,6 +819,34 @@ function SettlementModal({
         </p>
       </div>
     </Modal>
+  );
+}
+
+/** صف صغير للعرض داخل البطاقات */
+function Row({
+  label,
+  value,
+  tone = "gray",
+}: {
+  label: string;
+  value: string;
+  tone?: "green" | "amber" | "red" | "gray";
+}) {
+  return (
+    <div className="flex items-center justify-between gap-2">
+      <span className="text-gray-400">{label}</span>
+      <span
+        className={cx(
+          "font-extrabold",
+          tone === "green" && "text-emerald-700 dark:text-emerald-300",
+          tone === "amber" && "text-amber-600 dark:text-amber-300",
+          tone === "red" && "text-red-600 dark:text-red-400",
+          tone === "gray" && "text-gray-700 dark:text-slate-200"
+        )}
+      >
+        {value}
+      </span>
+    </div>
   );
 }
 

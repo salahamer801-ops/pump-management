@@ -14,15 +14,39 @@ import {
   Wallet,
 } from "lucide-react";
 import { useApp } from "../../store";
-import type { OperatorRecord, Transaction, TxKind, FuelRecord } from "../../domain/types";
+import type {
+  Debt,
+  FuelRecord,
+  OperatorRecord,
+  Payment,
+  PaymentMethod,
+  PaymentType,
+  Transaction,
+  TransferEvent,
+  TransferType,
+  TxKind,
+} from "../../domain/types";
 import {
+  PAYMENT_METHOD_OPTIONS,
+  PAYMENT_TYPE_OPTIONS,
+  TRANSFER_TYPE_OPTIONS,
+  allDebts,
+  allPayments,
+  allTransferEvents,
+  debtRemaining,
+  debtStatusLabel,
+  debtStatusTone,
   debtors,
   findPerson,
   operatorPaidFor,
+  paymentMethodLabel,
+  paymentTypeLabel,
+  paymentsForDebt,
   personBalance,
   personName,
   personTransactions,
   pumpFinancials,
+  transferTypeLabel,
   txKindLabel,
 } from "../../domain/rules";
 import { durationMin, formatDuration, isoToShort, sum, todayISO, uid } from "../../domain/util";
@@ -44,7 +68,7 @@ import {
 } from "../../components/ui";
 import PersonPicker from "../../components/PersonPicker";
 
-type Tab = "accounts" | "fuel" | "operator";
+type Tab = "accounts" | "money" | "fuel" | "operator";
 
 export default function FinanceScreen() {
   const { state } = useApp();
@@ -82,6 +106,7 @@ export default function FinanceScreen() {
         {(
           [
             { id: "accounts", label: "الحسابات" },
+            { id: "money", label: "الدفعات والديون" },
             { id: "fuel", label: "الديزل" },
             { id: "operator", label: "الرواسة" },
           ] as const
@@ -185,6 +210,7 @@ export default function FinanceScreen() {
         </Card>
       ) : null}
 
+      {tab === "money" ? <MoneySection /> : null}
       {tab === "fuel" ? <FuelSection /> : null}
       {tab === "operator" ? <OperatorSection /> : null}
 
@@ -512,7 +538,12 @@ function OperatorModal({ onClose }: { onClose: () => void }) {
               pumpId: pump.id,
               dayId: null,
               date,
+              attendantPersonId: null,
               operatorName: name,
+              ratePerHourSnapshot: wage,
+              paidAmount: 0,
+              remainingAmount: due,
+              status: due <= 0 ? "settled" : "open",
               hourlyWage: wage,
               startTime: start,
               endTime: end,
@@ -530,6 +561,567 @@ function OperatorModal({ onClose }: { onClose: () => void }) {
           حفظ السجل
         </Button>
       </div>
+    </Modal>
+  );
+}
+
+/* ------------------- الدفعات والديون والسلف (§12, §13, §14) ------------- */
+
+function MoneySection() {
+  const { state, actions } = useApp();
+  const pump = state.pump!;
+  const [debtOpen, setDebtOpen] = useState(false);
+  const [paymentOpen, setPaymentOpen] = useState<{ personId: string | null; debtId: string | null } | null>(
+    null
+  );
+  const [transferOpen, setTransferOpen] = useState(false);
+
+  const debts = allDebts(state);
+  const payments = allPayments(state);
+  const transfers = allTransferEvents(state);
+  const openTotal = debts.reduce((s, d) => s + debtRemaining(d), 0);
+
+  return (
+    <div className="space-y-4">
+      <Card className="p-4" data-testid="debts-panel">
+        <div className="mb-3 flex items-center gap-2">
+          <CircleDollarSign size={16} className="text-amber-600" />
+          <h2 className="text-sm font-extrabold text-gray-800 dark:text-white">الديون (سجلات مستقلة)</h2>
+          <button
+            onClick={() => setDebtOpen(true)}
+            className="mr-auto rounded-xl bg-amber-600 px-3 py-1.5 text-[11px] font-bold text-white"
+          >
+            <Plus size={12} className="inline -mt-0.5" /> دين جديد
+          </button>
+        </div>
+        <p className="mb-2 rounded-2xl bg-gray-50 px-3 py-2 text-[11px] text-gray-500 dark:bg-slate-700 dark:text-slate-300">
+          الدين لا يُحسب من مجرد وجود استخدام — كل دين سجل مستقل بمبلغه وحالته، وكل دفعة عليه سجل مستقل آخر.
+          المتبقي عليه الآن: <b>{formatMoney(openTotal, pump.currency)}</b>
+        </p>
+        {debts.length === 0 ? (
+          <p className="py-3 text-center text-xs text-gray-400">لا توجد ديون مسجّلة.</p>
+        ) : (
+          <div className="space-y-2">
+            {debts.map((d) => {
+              const paid = (d.paidAmount || 0);
+              const remaining = debtRemaining(d);
+              const linked = paymentsForDebt(state, d.id);
+              return (
+                <div key={d.id} className="rounded-2xl border border-gray-100 px-3 py-3 dark:border-slate-700">
+                  <div className="flex items-center gap-2">
+                    <div className="min-w-0 flex-1">
+                      <div className="truncate text-xs font-extrabold text-gray-800 dark:text-white">
+                        {personName(state, d.debtorId)} — {formatMoney(d.amount, pump.currency)}
+                      </div>
+                      <div className="text-[11px] text-gray-400">
+                        {isoToShort(d.date)} · {d.reason}
+                        {d.linkedOperationType !== "manual" ? ` · مرجع: ${d.linkedOperationType}` : ""}
+                      </div>
+                    </div>
+                    <Pill tone={debtStatusTone(d.status)}>{debtStatusLabel(d.status)}</Pill>
+                  </div>
+                  <div className="mt-1.5 flex flex-wrap items-center gap-2 text-[11px]">
+                    <span className="text-emerald-700 dark:text-emerald-300">
+                      مدفوع {formatMoney(paid, pump.currency)}
+                    </span>
+                    <span className={remaining > 0 ? "font-bold text-red-600" : "text-gray-400"}>
+                      متبقٍ {formatMoney(remaining, pump.currency)}
+                    </span>
+                    <span className="text-gray-400">
+                      {linked.length ? `${linked.length} دفعة مرتبطة` : "لا دفعات مرتبطة"}
+                    </span>
+                  </div>
+                  <div className="mt-2 flex flex-wrap gap-1.5">
+                    {remaining > 0 ? (
+                      <button
+                        onClick={() => setPaymentOpen({ personId: d.debtorId, debtId: d.id })}
+                        className="rounded-xl bg-emerald-50 px-3 py-1.5 text-[11px] font-bold text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300"
+                      >
+                        <Banknote size={12} className="inline -mt-0.5" /> دفعة على هذا الدين
+                      </button>
+                    ) : null}
+                    {d.status !== "cancelled" ? (
+                      <button
+                        onClick={() => {
+                          const reason = window.prompt("سبب إلغاء الدين؟", "إلغاء بموجب اتفاق") ?? "";
+                          if (reason) actions.cancelDebt(d.id, reason, "manager");
+                        }}
+                        className="rounded-xl bg-red-50 px-3 py-1.5 text-[11px] font-bold text-red-600 dark:bg-red-900/30 dark:text-red-300"
+                      >
+                        <Undo2 size={12} className="inline -mt-0.5" /> إلغاء الدين (يبقى في التاريخ)
+                      </button>
+                    ) : null}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </Card>
+
+      <Card className="p-4" data-testid="payments-panel">
+        <div className="mb-3 flex items-center gap-2">
+          <Banknote size={16} className="text-emerald-600" />
+          <h2 className="text-sm font-extrabold text-gray-800 dark:text-white">الدفعات (كل دفعة سجل مستقل)</h2>
+          <button
+            onClick={() => setPaymentOpen({ personId: null, debtId: null })}
+            className="mr-auto rounded-xl bg-emerald-600 px-3 py-1.5 text-[11px] font-bold text-white"
+          >
+            <Plus size={12} className="inline -mt-0.5" /> دفعة جديدة
+          </button>
+        </div>
+        {payments.length === 0 ? (
+          <p className="py-3 text-center text-xs text-gray-400">لا توجد دفعات مسجّلة.</p>
+        ) : (
+          <div className="space-y-2">
+            {payments.map((p) => (
+              <div
+                key={p.id}
+                className="flex items-center gap-3 rounded-2xl bg-gray-50 px-3 py-2 text-[11px] dark:bg-slate-700"
+              >
+                <div className="min-w-0 flex-1">
+                  <div className="truncate font-extrabold text-gray-800 dark:text-white">
+                    {personName(state, p.personId)} — {formatMoney(p.amount, pump.currency)}
+                  </div>
+                  <div className="text-gray-400">
+                    {isoToShort(p.date)} · {paymentTypeLabel(p.type)} · {paymentMethodLabel(p.method)}
+                    {p.reason ? ` · ${p.reason}` : ""}
+                    {p.linkedOperationType === "debt" ? " · على دين محدد" : ""}
+                  </div>
+                </div>
+                <button
+                  onClick={() => {
+                    const reason = window.prompt("سبب إلغاء الدفعة؟", "تصحيح") ?? "";
+                    if (reason) actions.voidPayment(p.id, reason, "manager");
+                  }}
+                  className="rounded-lg bg-white p-1.5 text-red-500 dark:bg-slate-800"
+                  aria-label="إلغاء الدفعة"
+                >
+                  <Undo2 size={13} />
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
+        <p className="mt-2 text-[10px] leading-relaxed text-gray-400">
+          إلغاء الدفعة لا يحذفها: تُعلَّم ملغاة ويُسجَّل قيد عكسي في دفتر الحركات — التاريخ يبقى كاملًا.
+        </p>
+      </Card>
+
+      <Card className="p-4" data-testid="transfers-panel">
+        <div className="mb-3 flex items-center gap-2">
+          <Wallet size={16} className="text-sky-600" />
+          <h2 className="text-sm font-extrabold text-gray-800 dark:text-white">
+            السلف والإعارة والتحويل (عمليات مستقلة)
+          </h2>
+          <button
+            onClick={() => setTransferOpen(true)}
+            className="mr-auto rounded-xl bg-sky-600 px-3 py-1.5 text-[11px] font-bold text-white"
+          >
+            <Plus size={12} className="inline -mt-0.5" /> عملية جديدة
+          </button>
+        </div>
+        {transfers.length === 0 ? (
+          <p className="py-3 text-center text-xs text-gray-400">لا توجد عمليات سلف أو تحويل.</p>
+        ) : (
+          <div className="space-y-2">
+            {transfers.map((t) => (
+              <div
+                key={t.id}
+                className="flex items-center gap-3 rounded-2xl bg-gray-50 px-3 py-2 text-[11px] dark:bg-slate-700"
+              >
+                <div className="min-w-0 flex-1">
+                  <div className="truncate font-extrabold text-gray-800 dark:text-white">
+                    {transferTypeLabel(t.type)} — {formatDuration(t.minutes)}
+                  </div>
+                  <div className="text-gray-400">
+                    من {personName(state, t.fromPersonId)} إلى {personName(state, t.toPersonId)} ·{" "}
+                    {isoToShort(t.date)} · {t.reason}
+                  </div>
+                </div>
+                <Pill tone={t.status === "active" ? "blue" : t.status === "settled" ? "green" : "gray"}>
+                  {t.status === "active" ? "قائمة" : t.status === "settled" ? "مسوّاة" : "ملغاة"}
+                </Pill>
+                {t.status !== "cancelled" ? (
+                  <button
+                    onClick={() => {
+                      const reason = window.prompt("سبب إلغاء العملية؟", "إلغاء بموجب اتفاق") ?? "";
+                      if (reason) actions.cancelTransferEvent(t.id, reason, "manager");
+                    }}
+                    className="rounded-lg bg-white p-1.5 text-red-500 dark:bg-slate-800"
+                    aria-label="إلغاء العملية"
+                  >
+                    <Undo2 size={13} />
+                  </button>
+                ) : null}
+              </div>
+            ))}
+          </div>
+        )}
+        <p className="mt-2 text-[10px] leading-relaxed text-gray-400">
+          السلف والإعارة والتحويل وتقديم الدور تُسجَّل كعمليات مستقلة بتاريخها وطرفيها وساعاتها — لا تعديل لصف
+          اليوم ولا لحق السهم.
+        </p>
+      </Card>
+
+      {debtOpen ? <DebtModal onClose={() => setDebtOpen(false)} /> : null}
+      {paymentOpen ? (
+        <PaymentModal
+          initialPersonId={paymentOpen.personId}
+          initialDebtId={paymentOpen.debtId}
+          onClose={() => setPaymentOpen(null)}
+        />
+      ) : null}
+      {transferOpen ? <TransferModal onClose={() => setTransferOpen(false)} /> : null}
+    </div>
+  );
+}
+
+function DebtModal({ onClose }: { onClose: () => void }) {
+  const { state, actions } = useApp();
+  const pump = state.pump!;
+  const [personId, setPersonId] = useState<string | null>(null);
+  const [amount, setAmount] = useState(0);
+  const [date, setDate] = useState(todayISO());
+  const [reason, setReason] = useState("");
+  const [notes, setNotes] = useState("");
+  const [picking, setPicking] = useState(false);
+
+  return (
+    <Modal open onClose={onClose} title="تسجيل دين مستقل">
+      <div className="space-y-3">
+        <Field label="على مَن الدين">
+          <button
+            onClick={() => setPicking(true)}
+            className="w-full rounded-2xl border border-gray-200 bg-gray-50 px-4 py-3 text-right text-sm font-bold text-gray-800 dark:border-slate-600 dark:bg-slate-700 dark:text-white"
+          >
+            {personId ? personName(state, personId) : "اختيار الشخص"}
+          </button>
+        </Field>
+        <div className="grid grid-cols-2 gap-3">
+          <Field label="المبلغ">
+            <NumberInput value={amount} onChange={(e) => setAmount(Number(e.target.value))} />
+          </Field>
+          <Field label="التاريخ">
+            <TextInput type="date" value={date} onChange={(e) => setDate(e.target.value)} />
+          </Field>
+        </div>
+        <Field label="السبب / البيان">
+          <TextInput
+            value={reason}
+            onChange={(e) => setReason(e.target.value)}
+            placeholder="مثال: قيمة ديزل 30 لتر"
+          />
+        </Field>
+        <Field label="ملاحظات">
+          <TextArea value={notes} onChange={(e) => setNotes(e.target.value)} rows={2} />
+        </Field>
+        <p className="rounded-2xl bg-amber-50 px-3 py-2 text-[11px] leading-relaxed text-amber-700">
+          يُسجَّل الدين كسجل مستقل + حركة استحقاق في دفتر الحركات. أي دفعة عليه تكون دفعة مستقلة أخرى.
+        </p>
+        <Button
+          className="w-full"
+          disabled={!personId || amount <= 0}
+          onClick={() => {
+            if (!personId) return;
+            const debt: Debt = {
+              id: uid("dt"),
+              pumpId: pump.id,
+              debtorId: personId,
+              amount,
+              paidAmount: 0,
+              remainingAmount: amount,
+              reason: reason || "دين",
+              linkedOperationId: null,
+              linkedOperationType: "manual",
+              date,
+              status: "unpaid",
+              notes,
+              createdAt: new Date().toISOString(),
+              createdBy: "manager",
+            };
+            actions.addDebt(debt, "manager");
+            onClose();
+          }}
+        >
+          <CircleDollarSign size={16} /> حفظ الدين
+        </Button>
+      </div>
+      {picking ? (
+        <PersonPicker
+          open
+          onClose={() => setPicking(false)}
+          pumpId={pump.id}
+          title="اختيار المدين"
+          onSelect={(p) => setPersonId(p.id)}
+        />
+      ) : null}
+    </Modal>
+  );
+}
+
+function PaymentModal({
+  initialPersonId,
+  initialDebtId,
+  onClose,
+}: {
+  initialPersonId: string | null;
+  initialDebtId: string | null;
+  onClose: () => void;
+}) {
+  const { state, actions } = useApp();
+  const pump = state.pump!;
+  const [personId, setPersonId] = useState<string | null>(initialPersonId);
+  const [debtId, setDebtId] = useState<string | null>(initialDebtId);
+  const [amount, setAmount] = useState(0);
+  const [date, setDate] = useState(todayISO());
+  const [type, setType] = useState<PaymentType>(initialDebtId ? "debt" : "other");
+  const [method, setMethod] = useState<PaymentMethod>("cash");
+  const [reason, setReason] = useState("");
+  const [notes, setNotes] = useState("");
+  const [picking, setPicking] = useState(false);
+
+  const personDebts: Debt[] = personId
+    ? state.debts.filter((d) => d.debtorId === personId && d.status !== "cancelled")
+    : [];
+  const selectedDebt = debtId ? state.debts.find((d) => d.id === debtId) ?? null : null;
+
+  return (
+    <Modal open onClose={onClose} title="تسجيل دفعة">
+      <div className="space-y-3">
+        <Field label="من دفع">
+          <button
+            onClick={() => setPicking(true)}
+            className="w-full rounded-2xl border border-gray-200 bg-gray-50 px-4 py-3 text-right text-sm font-bold text-gray-800 dark:border-slate-600 dark:bg-slate-700 dark:text-white"
+          >
+            {personId ? personName(state, personId) : "اختيار الشخص"}
+          </button>
+        </Field>
+
+        <Field label="على أي دين" hint="اتركه فارغًا لدفعة عامة">
+          <Select
+            value={debtId ?? ""}
+            onChange={(e) => {
+              const id = e.target.value || null;
+              setDebtId(id);
+              if (id) setType("debt");
+            }}
+          >
+            <option value="">دفعة عامة (بدون دين محدد)</option>
+            {personDebts.map((d) => (
+              <option key={d.id} value={d.id}>
+                {d.reason} — متبقٍ {debtRemaining(d)} ({debtStatusLabel(d.status)})
+              </option>
+            ))}
+          </Select>
+        </Field>
+
+        <div className="grid grid-cols-2 gap-3">
+          <Field label="المبلغ">
+            <NumberInput value={amount} onChange={(e) => setAmount(Number(e.target.value))} />
+          </Field>
+          <Field label="التاريخ">
+            <TextInput type="date" value={date} onChange={(e) => setDate(e.target.value)} />
+          </Field>
+        </div>
+
+        <div className="grid grid-cols-2 gap-3">
+          <Field label="نوع الدفعة">
+            <Select value={type} onChange={(e) => setType(e.target.value as PaymentType)}>
+              {PAYMENT_TYPE_OPTIONS.map((o) => (
+                <option key={o.id} value={o.id}>
+                  {o.label}
+                </option>
+              ))}
+            </Select>
+          </Field>
+          <Field label="طريقة الدفع">
+            <Select value={method} onChange={(e) => setMethod(e.target.value as PaymentMethod)}>
+              {PAYMENT_METHOD_OPTIONS.map((o) => (
+                <option key={o.id} value={o.id}>
+                  {o.label}
+                </option>
+              ))}
+            </Select>
+          </Field>
+        </div>
+
+        <Field label="السبب / البيان">
+          <TextInput
+            value={reason}
+            onChange={(e) => setReason(e.target.value)}
+            placeholder="مثال: دفعة أولى على دين الديزل"
+          />
+        </Field>
+        <Field label="ملاحظات">
+          <TextArea value={notes} onChange={(e) => setNotes(e.target.value)} rows={2} />
+        </Field>
+
+        {selectedDebt ? (
+          <p className="rounded-2xl bg-gray-50 px-3 py-2 text-[11px] text-gray-500 dark:bg-slate-700 dark:text-slate-300">
+            الدين: {formatMoney(selectedDebt.amount, pump.currency)} · مدفوع{" "}
+            {formatMoney(selectedDebt.paidAmount, pump.currency)} · سيصبح المتبقي{" "}
+            <b>{formatMoney(Math.max(0, debtRemaining(selectedDebt) - amount), pump.currency)}</b>
+          </p>
+        ) : null}
+
+        <Button
+          className="w-full"
+          disabled={!personId || amount <= 0}
+          onClick={() => {
+            if (!personId) return;
+            const payment: Payment = {
+              id: uid("pay"),
+              pumpId: pump.id,
+              personId,
+              amount,
+              date,
+              type,
+              method,
+              reason: reason || `دفعة (${paymentMethodLabel(method)})`,
+              linkedOperationId: debtId,
+              linkedOperationType: debtId ? "debt" : "manual",
+              transactionId: null,
+              notes,
+              status: "posted",
+              createdAt: new Date().toISOString(),
+              createdBy: "manager",
+            };
+            actions.addPayment(payment, "manager");
+            onClose();
+          }}
+        >
+          <Banknote size={16} /> حفظ الدفعة
+        </Button>
+        <p className="text-[10px] leading-relaxed text-gray-400">
+          كل دفعة سجل مستقل، ويمكن تسجيل عدة دفعات لنفس الدين — لا تُستبدل أي دفعة سابقة.
+        </p>
+      </div>
+      {picking ? (
+        <PersonPicker
+          open
+          onClose={() => setPicking(false)}
+          pumpId={pump.id}
+          title="اختيار الدافع"
+          onSelect={(p) => setPersonId(p.id)}
+        />
+      ) : null}
+    </Modal>
+  );
+}
+
+function TransferModal({ onClose }: { onClose: () => void }) {
+  const { state, actions } = useApp();
+  const pump = state.pump!;
+  const [type, setType] = useState<TransferType>("loan");
+  const [fromPersonId, setFromPersonId] = useState<string | null>(null);
+  const [toPersonId, setToPersonId] = useState<string | null>(null);
+  const [minutes, setMinutes] = useState(180);
+  const [date, setDate] = useState(todayISO());
+  const [reason, setReason] = useState("");
+  const [notes, setNotes] = useState("");
+  const [picking, setPicking] = useState<"from" | "to" | null>(null);
+
+  return (
+    <Modal open onClose={onClose} title="عملية سلف / إعارة / تحويل">
+      <div className="space-y-3">
+        <Field label="نوع العملية">
+          <Select value={type} onChange={(e) => setType(e.target.value as TransferType)}>
+            {TRANSFER_TYPE_OPTIONS.map((o) => (
+              <option key={o.id} value={o.id}>
+                {o.label}
+              </option>
+            ))}
+          </Select>
+        </Field>
+
+        <div className="grid grid-cols-2 gap-3">
+          <Field label="من">
+            <button
+              onClick={() => setPicking("from")}
+              className="w-full rounded-2xl border border-gray-200 bg-gray-50 px-3 py-3 text-right text-xs font-bold text-gray-800 dark:border-slate-600 dark:bg-slate-700 dark:text-white"
+            >
+              {fromPersonId ? personName(state, fromPersonId) : "اختيار"}
+            </button>
+          </Field>
+          <Field label="إلى">
+            <button
+              onClick={() => setPicking("to")}
+              className="w-full rounded-2xl border border-gray-200 bg-gray-50 px-3 py-3 text-right text-xs font-bold text-gray-800 dark:border-slate-600 dark:bg-slate-700 dark:text-white"
+            >
+              {toPersonId ? personName(state, toPersonId) : "اختيار"}
+            </button>
+          </Field>
+        </div>
+
+        <div className="grid grid-cols-2 gap-3">
+          <Field label="الساعات" hint="بالدقائق أدناه">
+            <NumberInput
+              value={Math.round((minutes / 60) * 100) / 100}
+              onChange={(e) => setMinutes(Math.round(Number(e.target.value) * 60))}
+            />
+          </Field>
+          <Field label="التاريخ">
+            <TextInput type="date" value={date} onChange={(e) => setDate(e.target.value)} />
+          </Field>
+        </div>
+        <p className="rounded-2xl bg-gray-50 px-3 py-2 text-[11px] text-gray-500 dark:bg-slate-700 dark:text-slate-300">
+          {formatDuration(minutes)} ({minutes} دقيقة)
+        </p>
+
+        <Field label="السبب / البيان">
+          <TextInput
+            value={reason}
+            onChange={(e) => setReason(e.target.value)}
+            placeholder="مثال: سلفة 3 ساعات لحين دوري"
+          />
+        </Field>
+        <Field label="ملاحظات">
+          <TextArea value={notes} onChange={(e) => setNotes(e.target.value)} rows={2} />
+        </Field>
+
+        <Button
+          className="w-full"
+          disabled={!toPersonId || minutes <= 0}
+          onClick={() => {
+            if (!toPersonId) return;
+            const event: TransferEvent = {
+              id: uid("tr"),
+              pumpId: pump.id,
+              type,
+              shareId: null,
+              fromPersonId,
+              toPersonId,
+              minutes,
+              date,
+              amount: 0,
+              reason: reason || transferTypeLabel(type),
+              status: "active",
+              notes,
+              transactionId: null,
+              createdAt: new Date().toISOString(),
+              createdBy: "manager",
+            };
+            actions.addTransferEvent(event, null, "manager");
+            onClose();
+          }}
+        >
+          <Wallet size={16} /> حفظ العملية
+        </Button>
+        <p className="text-[10px] leading-relaxed text-gray-400">
+          العملية تُسجَّل بسجلها الكامل (النوع · من · إلى · الساعات · التاريخ · السبب) ولا تعدّل حقول أي يوم أو
+          سهم.
+        </p>
+      </div>
+      {picking ? (
+        <PersonPicker
+          open
+          onClose={() => setPicking(null)}
+          pumpId={pump.id}
+          title={picking === "from" ? "اختيار الطرف الأول" : "اختيار الطرف الثاني"}
+          onSelect={(p) => (picking === "from" ? setFromPersonId(p.id) : setToPersonId(p.id))}
+        />
+      ) : null}
     </Modal>
   );
 }

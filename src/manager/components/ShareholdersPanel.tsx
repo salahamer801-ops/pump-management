@@ -91,6 +91,16 @@ export default function ShareholdersPanel({
         <div className="mt-3 space-y-2">
           {rows.map((row) => {
             const sh = row.shareholder;
+            /**
+             * مصدر الحقيقة لحالة السهم هو سجل الحقوق (§23):
+             * إن وُجد حق نشط فهو الحالة، وحقول useStatus/counterpart تبقى للتوافق والعرض التاريخي فقط.
+             */
+            const rightStatus: ShareholderUseStatus = row.activeRight
+              ? row.activeRight.kind === "rent"
+                ? "rented"
+                : "transferred"
+              : row.status;
+            const legacyOnly = !row.activeRight && row.status !== "continuing";
             return (
               <div
                 key={sh.id}
@@ -106,7 +116,8 @@ export default function ShareholdersPanel({
                       <span className="truncate text-sm font-extrabold text-gray-900 dark:text-white">
                         {row.person?.name ?? "—"}
                       </span>
-                      <Pill tone={useStatusTone(row.status)}>{useStatusLabel(row.status)}</Pill>
+                      <Pill tone={useStatusTone(rightStatus)}>{useStatusLabel(rightStatus)}</Pill>
+                      {row.activeRight ? <Pill tone="gray">من سجل الحقوق</Pill> : null}
                     </div>
                     <div className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[11px] text-gray-400">
                       {row.person?.phone ? (
@@ -121,16 +132,20 @@ export default function ShareholdersPanel({
                         {sh.baseHoursMin > 0 ? ` · ${sh.baseHoursMin / 60} ساعة أساسية` : ""}
                       </span>
                     </div>
-                    {row.status !== "continuing" ? (
+                    {row.activeRight && row.currentHolder && row.currentHolder.id !== sh.personId ? (
+                      <div className="mt-1 rounded-xl bg-sky-50 px-2.5 py-1.5 text-[11px] font-bold text-sky-800 dark:bg-sky-900/20 dark:text-sky-300">
+                        صاحب الحق الحالي (من سجل الحقوق): {row.currentHolder.name} ·{" "}
+                        {row.activeRight.kind === "rent" ? "تأجير" : row.activeRight.kind === "gift" ? "إعطاء" : row.activeRight.kind === "loan" ? "إعارة" : "نقل حق"}
+                        {row.activeRight.startedAt ? ` من ${isoToShort(row.activeRight.startedAt)}` : ""}
+                        {row.counterpartPhone ? ` — ${row.counterpartPhone}` : ""}
+                      </div>
+                    ) : legacyOnly ? (
                       <div className="mt-1 rounded-xl bg-amber-50 px-2.5 py-1.5 text-[11px] font-bold text-amber-800 dark:bg-amber-900/20 dark:text-amber-300">
+                        حالة قديمة مسجّلة (لا يوجد حق نشط حاليًا):{" "}
                         {row.status === "rented" ? "المستأجر" : row.status === "sold" ? "المالك الجديد" : "المتنازل له"}:{" "}
                         {row.counterpart?.name ?? "—"}
                         {row.counterpartPhone ? ` — ${row.counterpartPhone}` : ""}
                         {sh.useStatusAt ? ` · من ${isoToShort(sh.useStatusAt)}` : ""}
-                      </div>
-                    ) : row.currentHolder && row.currentHolder.id !== sh.personId ? (
-                      <div className="mt-1 rounded-xl bg-sky-50 px-2.5 py-1.5 text-[11px] font-bold text-sky-800 dark:bg-sky-900/20 dark:text-sky-300">
-                        صاحب الحق الحالي: {row.currentHolder.name}
                       </div>
                     ) : null}
                     {sh.useStatusNote ? (
@@ -145,7 +160,7 @@ export default function ShareholdersPanel({
                       key={opt.id}
                       onClick={() => {
                         if (opt.id === "continuing") {
-                          if (row.status === "continuing") return;
+                          if (rightStatus === "continuing") return;
                           setReturnFor(sh);
                           return;
                         }
@@ -157,7 +172,7 @@ export default function ShareholdersPanel({
                       title={opt.hint}
                       className={cx(
                         "rounded-xl border px-2 py-1.5 text-[11px] font-bold transition",
-                        row.status === opt.id
+                        rightStatus === opt.id
                           ? "border-emerald-400 bg-emerald-50 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300"
                           : "border-gray-200 text-gray-500 hover:border-emerald-200 dark:border-slate-600 dark:text-slate-300"
                       )}
@@ -182,8 +197,8 @@ export default function ShareholdersPanel({
         </p>
       ) : null}
       <p className="mt-2 text-[10px] leading-relaxed text-gray-400">
-        تسجيل الحالة لا يحذف المساهم ولا تاريخه — الحالة تصف مَن يستخدم السهم الآن، وكل تغيير يُحفظ في سجل الحقوق
-        وسجل التدقيق.
+        تسجيل الحالة لا يحذف المساهم ولا تاريخه — مصدر الحقيقة لصاحب الحق هو <b>سجل الحقوق</b>، وكل تغيير يُحفظ
+        فيه وفي سجل التدقيق ولا يستبدل العلاقة السابقة.
       </p>
 
       {addOpen ? (

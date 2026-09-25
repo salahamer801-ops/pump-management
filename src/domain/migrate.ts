@@ -12,19 +12,21 @@ import type {
   DialaDay,
   DialaRound,
   DayEntry,
+  Debt,
   OtherChargeV1,
   Person,
   Pump,
   PumpV1,
   Shareholder,
   Transaction,
+  TransferEvent,
 } from "./types";
 import { addDaysISO, durationMin, isoToShort, minutesToTime, timeToMinutes, todayISO, uid } from "./util";
 import { computeUsageDraft, isoRangeDays } from "./rules";
 
 export function emptyState(): AppState {
   return {
-    version: 2,
+    version: 3,
     pump: null,
     persons: [],
     shareholders: [],
@@ -40,6 +42,11 @@ export function emptyState(): AppState {
     personalRecords: [],
     settlements: [],
     conflictAcks: [],
+    payments: [],
+    debts: [],
+    conflicts: [],
+    transferEvents: [],
+    corrections: [],
     notifications: [],
     auditLogs: [],
     syncQueue: [],
@@ -124,22 +131,81 @@ function linkDaysToRounds(input: AppState): Pick<AppState, "rounds" | "days" | "
 
 /**
  * تصفية الحالة المقروءة من التخزين: نضمن وجود الحقول الحديثة
- * (حالة استخدام السهم، حالة تسديد الديزل، نوع سداد الرواسة)
- * وأن كل يوم فعلي داخل ديالة — دون حذف أي بيانات قديمة.
+ * (حالة استخدام السهم، حالة تسديد الديزل، نوع سداد الرواسة، الدفعات، الديون،
+ * التعارضات، السلف، التصحيحات) وأن كل يوم فعلي داخل ديالة — دون حذف أي بيانات قديمة.
+ *
+ * قاعدة §17: لا يُعاد حساب أي قيمة تاريخية هنا. القيم القديمة
+ * (اللترات، سعر اللتر، الاستحقاق، الاستهلاك/ساعة) تبقى كما حُفظت وقت العملية.
  */
-export function normalizeState(input: AppState): AppState {
+export function normalizeState(
+  input: Partial<AppState> & { version?: number }
+): AppState {
   const base = emptyState();
-  const linked = linkDaysToRounds(input);
+  const linked = linkDaysToRounds({ ...base, ...input } as AppState);
+  const usages = (input.usages ?? []).map((u) => ({
+    ...u,
+    dieselSettlement: u.dieselSettlement ?? "unpaid",
+    dieselShortageLiters: u.dieselShortageLiters ?? 0,
+    royaltyPayMode: u.royaltyPayMode ?? "credit",
+    settlementNote: u.settlementNote ?? "",
+    /* الحقول الجديدة تُملأ بقيم محايدة — والقيم المحسوبة القديمة لا تُلمس */
+    personalFuelPriceSnapshot: u.personalFuelPriceSnapshot ?? 0,
+    fuelCost: u.fuelCost ?? u.fuelAmountDue ?? 0,
+    stoppageMin: u.stoppageMin ?? 0,
+    overCapacityMin: u.overCapacityMin ?? 0,
+    source: u.source ?? ("manager" as const),
+    updatedAt: u.updatedAt ?? u.createdAt ?? new Date().toISOString(),
+  }));
   return {
     ...base,
     ...input,
+    version: 3,
     rounds: linked.rounds.map((r) => ({
       ...r,
       locked: r.locked ?? false,
       lockedAt: r.lockedAt ?? "",
       lockedBy: r.lockedBy ?? "",
     })),
-    days: linked.days,
+    days: linked.days.map((d) => ({
+      ...d,
+      /* الجدول الأساسي يُثبَّت مرة واحدة ثم لا يتغيّر بتعديل اليوم الفعلي (§4) */
+      plannedWorkStart: d.plannedWorkStart ?? d.workStart ?? "06:00",
+      plannedWorkEnd: d.plannedWorkEnd ?? d.workEnd ?? "18:00",
+      plannedCapacityMin:
+        d.plannedCapacityMin ?? d.capacityMin ?? durationMin(d.workStart, d.workEnd),
+    })),
+    entries: (input.entries ?? []).map((e) => ({ ...e, archived: e.archived ?? false })),
+    usages,
+    stoppages: (input.stoppages ?? []).map((s) => ({ ...s, archived: s.archived ?? false })),
+    operatorRecords: (input.operatorRecords ?? []).map((o) => {
+      const paid = o.paidAmount ?? 0;
+      const remaining = o.remainingAmount ?? Math.max(0, (o.dueAmount ?? 0) - paid);
+      return {
+        ...o,
+        attendantPersonId: o.attendantPersonId ?? null,
+        ratePerHourSnapshot: o.ratePerHourSnapshot ?? o.hourlyWage ?? 0,
+        paidAmount: paid,
+        remainingAmount: remaining,
+        status:
+          o.status ??
+          (o.archived
+            ? "cancelled"
+            : remaining <= 0 && (o.dueAmount ?? 0) > 0
+              ? "settled"
+              : paid > 0
+                ? "partial"
+                : "open"),
+      };
+    }),
+    personalRecords: (input.personalRecords ?? []).map((p) => ({
+      ...p,
+      source: p.source ?? ("user" as const),
+    })),
+    payments: input.payments ?? [],
+    debts: input.debts ?? [],
+    conflicts: input.conflicts ?? [],
+    transferEvents: input.transferEvents ?? [],
+    corrections: input.corrections ?? [],
     counters: { ...base.counters, ...input.counters, ...linked.counters },
     settings: { ...base.settings, ...input.settings },
     shareholders: (input.shareholders ?? []).map((s) => ({
@@ -149,13 +215,6 @@ export function normalizeState(input: AppState): AppState {
       counterpartPhone: s.counterpartPhone ?? "",
       useStatusAt: s.useStatusAt ?? "",
       useStatusNote: s.useStatusNote ?? "",
-    })),
-    usages: (input.usages ?? []).map((u) => ({
-      ...u,
-      dieselSettlement: u.dieselSettlement ?? "unpaid",
-      dieselShortageLiters: u.dieselShortageLiters ?? 0,
-      royaltyPayMode: u.royaltyPayMode ?? "credit",
-      settlementNote: u.settlementNote ?? "",
     })),
   };
 }
@@ -263,6 +322,9 @@ export function migrateV1(raw: unknown): AppState {
       workStart: cycle.workStart,
       workEnd: cycle.workEnd,
       capacityMin: durationMin(cycle.workStart, cycle.workEnd),
+      plannedWorkStart: cycle.workStart,
+      plannedWorkEnd: cycle.workEnd,
+      plannedCapacityMin: durationMin(cycle.workStart, cycle.workEnd),
       notes: "",
       openedBy: "manager",
       closedBy: "",
@@ -333,19 +395,25 @@ export function migrateV1(raw: unknown): AppState {
           fuelPerHourSnapshot: draft.fuelPerHourSnapshot,
           fuelLiters: draft.fuelLiters,
           fuelPriceSnapshot: draft.fuelPriceSnapshot,
+          personalFuelPriceSnapshot: 0,
+          fuelCost: draft.fuelAmountDue,
           fuelAmountDue: draft.fuelAmountDue,
           royaltyHourlySnapshot: draft.royaltyHourlySnapshot,
           royaltyAmountDue: draft.royaltyAmountDue,
+          stoppageMin: 0,
           dieselSettlement: "unpaid",
           dieselShortageLiters: 0,
           royaltyPayMode: "credit",
           settlementNote: "حالة مرجعية من النظام القديم — الحركات المالية محفوظة كما وردت",
           overCapacity: false,
           overCapacityReason: "",
+          overCapacityMin: 0,
           notes: "مُرحَّل من النظام القديم",
+          source: "manager",
           status: "active",
           createdAt: cycle.createdAt,
           createdBy: "manager",
+          updatedAt: cycle.createdAt,
         };
         state.usages.push(usage);
         entry.usageId = usage.id;
@@ -585,6 +653,9 @@ export function seedDemo(): AppState {
     workStart: "06:00",
     workEnd: "02:00",
     capacityMin: 20 * 60,
+    plannedWorkStart: "06:00",
+    plannedWorkEnd: "02:00",
+    plannedCapacityMin: 20 * 60,
     notes: "",
     openedBy: "manager",
     closedBy: status === "closed" ? "manager" : "",
@@ -693,9 +764,12 @@ export function seedDemo(): AppState {
       fuelPerHourSnapshot: draft.fuelPerHourSnapshot,
       fuelLiters: draft.fuelLiters,
       fuelPriceSnapshot: draft.fuelPriceSnapshot,
+      personalFuelPriceSnapshot: 0,
+      fuelCost: draft.fuelAmountDue,
       fuelAmountDue: draft.fuelAmountDue,
       royaltyHourlySnapshot: draft.royaltyHourlySnapshot,
       royaltyAmountDue: draft.royaltyAmountDue,
+      stoppageMin: 0,
       dieselSettlement: entry.actualPersonId ? "unpaid" : "paid",
       dieselShortageLiters: 0,
       royaltyPayMode: entry.actualPersonId ? "credit" : "cash",
@@ -704,10 +778,13 @@ export function seedDemo(): AppState {
         : "سدّد الديزل والرواسة نقدًا",
       overCapacity: false,
       overCapacityReason: "",
+      overCapacityMin: 0,
       notes: entry.actualPersonId ? "أخذ الساعات من صاحب الدور" : "",
+      source: "manager",
       status: "active",
       createdAt: new Date().toISOString(),
       createdBy: "manager",
+      updatedAt: new Date().toISOString(),
     };
     state.usages.push(usage);
     entry.usageId = usage.id;
@@ -764,7 +841,12 @@ export function seedDemo(): AppState {
     pumpId,
     dayId: dayYes.id,
     date: dayYes.date,
+    attendantPersonId: null,
     operatorName: "سالم الرواس",
+    ratePerHourSnapshot: 1500,
+    paidAmount: 0,
+    remainingAmount: 24000,
+    status: "open",
     hourlyWage: 1500,
     startTime: "06:00",
     endTime: "22:00",
@@ -801,6 +883,106 @@ export function seedDemo(): AppState {
     notes: "أخذت 5 ساعات فعلًا",
     matchStatus: "different",
     createdAt: new Date().toISOString(),
+  });
+
+  /* دين مستقل + دفعتان مستقلتان لنفس الدين (§12, §13) */
+  const demoDebt: Debt = {
+    id: uid("dt"),
+    pumpId,
+    debtorId: khaled.id,
+    amount: 36000,
+    paidAmount: 20000,
+    remainingAmount: 16000,
+    reason: "قيمة ديزل غير مسددة — 30 لتر",
+    linkedOperationId: null,
+    linkedOperationType: "usage",
+    date: yesterday,
+    status: "partially_paid",
+    notes: "أُسجّل كدين مستقل عن الاستخدام",
+    createdAt: new Date().toISOString(),
+    createdBy: "manager",
+    updatedAt: new Date().toISOString(),
+  };
+  state.debts.push(demoDebt);
+
+  state.payments.push(
+    {
+      id: uid("pay"),
+      pumpId,
+      personId: khaled.id,
+      amount: 12000,
+      date: yesterday,
+      type: "debt",
+      method: "cash",
+      reason: "دفعة أولى على دين الديزل",
+      linkedOperationId: demoDebt.id,
+      linkedOperationType: "debt",
+      transactionId: null,
+      notes: "",
+      status: "posted",
+      createdAt: new Date().toISOString(),
+      createdBy: "manager",
+    },
+    {
+      id: uid("pay"),
+      pumpId,
+      personId: khaled.id,
+      amount: 8000,
+      date: today,
+      type: "debt",
+      method: "transfer",
+      reason: "دفعة ثانية على نفس الدين",
+      linkedOperationId: demoDebt.id,
+      linkedOperationType: "debt",
+      transactionId: null,
+      notes: "الدفعتان مستقلتان ولا تُستبدل الأولى",
+      status: "posted",
+      createdAt: new Date().toISOString(),
+      createdBy: "manager",
+    }
+  );
+
+  /* سلفة ساعات: خالد أخذ 3 ساعات من دور علي — عملية مستقلة لا تعديل حقول (§14) */
+  const demoTransfer: TransferEvent = {
+    id: uid("tr"),
+    pumpId,
+    type: "loan",
+    shareId: shAli.id,
+    fromPersonId: ali.id,
+    toPersonId: khaled.id,
+    minutes: 180,
+    date: yesterday,
+    amount: 0,
+    reason: "سلفة 3 ساعات",
+    status: "active",
+    notes: "المعير: علي — المستعير: خالد — والمستخدم الفعلي هو خالد",
+    transactionId: null,
+    createdAt: new Date().toISOString(),
+    createdBy: "manager",
+  };
+  state.transferEvents.push(demoTransfer);
+
+  /* تعارض محفوظ: رسمي ساعتان? لا — هنا رسمي 4 ساعات وشخصي 5 ساعات (§18) */
+  state.conflicts.push({
+    id: uid("cf"),
+    pumpId,
+    type: "official_personal",
+    key: `${khaled.id}|${yesterday}|minutes`,
+    dayId: dayYes.id,
+    personId: khaled.id,
+    officialRecordId: null,
+    personalRecordId: state.personalRecords[state.personalRecords.length - 1]?.id ?? null,
+    officialValue: "4 ساعات",
+    personalValue: "5 ساعات",
+    difference: "ساعة واحدة",
+    differenceValue: -60,
+    unit: "minutes",
+    status: "open",
+    createdAt: new Date().toISOString(),
+    resolvedAt: "",
+    resolvedBy: "",
+    resolution: "",
+    notes: "النظام عرض الاختلاف ولم يعدّل أي سجل",
   });
 
   state.notifications.push(

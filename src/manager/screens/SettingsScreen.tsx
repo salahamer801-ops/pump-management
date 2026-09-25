@@ -17,6 +17,7 @@ import {
 } from "lucide-react";
 import { useApp } from "../../store";
 import type { AppState, Currency, EnergyType } from "../../domain/types";
+import { normalizeState } from "../../domain/migrate";
 import { formatClock, todayISO } from "../../domain/util";
 import { Button, Card, Field, NumberInput, Pill, Select, TextArea, TextInput, TimeInput, cx } from "../../components/ui";
 
@@ -55,8 +56,9 @@ export default function SettingsScreen({
       const text = await file.text();
       const parsed = JSON.parse(text) as AppState;
       if (!parsed || typeof parsed !== "object") throw new Error("bad");
-      actions.importState({ ...parsed, version: 2 });
-      setMessage("تم استيراد البيانات بنجاح.");
+      /* الاستيراد لا يحذف شيئًا: يُرقّى الملف إلى الإصدار الحالي إن كان أقدم */
+      actions.importState(normalizeState({ ...parsed }));
+      setMessage("تم استيراد البيانات بنجاح مع الحفاظ على السجلات القديمة.");
     } catch {
       setMessage("تعذّر قراءة الملف — تأكد أنه ملف نسخة احتياطية صحيح.");
     }

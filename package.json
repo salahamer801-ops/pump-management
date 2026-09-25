@@ -8,7 +8,8 @@
     "dev": "vite",
     "prebuild": "node scripts/gen-icons.mjs",
     "build": "vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "verify": "esbuild scripts/verify-calc.ts --bundle --platform=node --format=esm --outfile=.mythex/verify-calc.mjs --log-level=error && node .mythex/verify-calc.mjs"
   },
   "dependencies": {
     "lucide-react": "0.468.0",

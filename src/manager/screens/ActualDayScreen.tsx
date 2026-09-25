@@ -43,6 +43,7 @@ import type {
 import {
   DIESEL_SETTLEMENT_OPTIONS,
   ROYALTY_MODE_OPTIONS,
+  capacityBreakdown,
   computeUsageDraft,
   currentRight,
   dayByDate,
@@ -57,6 +58,7 @@ import {
   entryMinutes,
   findPerson,
   openIssues,
+  overlapsFor,
   personName,
   pumpWindow,
   royaltyModeLabel,
@@ -65,11 +67,13 @@ import {
   roundOfDay,
   shareholderOfPerson,
   shortageAmountOf,
+  stoppageMinutesInRange,
   usageTypeLabel,
 } from "../../domain/rules";
 import {
   addDaysISO,
   durationMin,
+  formatClock,
   formatDuration,
   isoToDisplay,
   isoToShort,
@@ -129,6 +133,8 @@ export default function ActualDayScreen({
   const [ackIssue, setAckIssue] = useState<{ key: string; kind: ConflictKind; message: string } | null>(null);
   const [reopenOpen, setReopenOpen] = useState(false);
   const [actorName, setActorName] = useState("المسؤول");
+  /** سبب التصحيح — مطلوب عند تعديل يوم مغلق (§21) */
+  const [correctionReason, setCorrectionReason] = useState("");
   const [shortageFor, setShortageFor] = useState<string | null>(null);
   const [editPerson, setEditPerson] = useState<Person | null>(null);
 
@@ -147,6 +153,17 @@ export default function ActualDayScreen({
   const allIssues = day ? dayIssues(state, day, pump) : [];
   const stoppages = state.stoppages.filter((s) => (day ? s.dayId === day.id : false) && !s.archived);
   const settle = day ? daySettlementTotals(state, day.id) : null;
+  /** تفصيل الساعات: الاستخدام الفعلي · ساعات المضخة · التوقفات · المتاح · التجاوز (§8) */
+  const breakdown = useMemo(
+    () => (day ? capacityBreakdown(state, day, pump) : null),
+    [state, day, pump]
+  );
+  /** تصحيحات ما بعد الإغلاق — التاريخ محفوظ (§21) */
+  const dayCorrections = useMemo(
+    () => (day ? state.corrections.filter((c) => c.dayId === day.id) : []),
+    [state.corrections, day]
+  );
+  const dayClosed = day?.status === "closed" || day?.status === "revised";
 
   // استخدامات مُسجَّلة بلا صف في الترتيب (حفاظًا على عدم وجود سجلات يتيمة)
   const orphanUsages = useMemo(() => {
@@ -183,6 +200,9 @@ export default function ActualDayScreen({
         workStart: pump.workStart,
         workEnd: pump.workEnd,
         capacityMin: durationMin(pump.workStart, pump.workEnd),
+        plannedWorkStart: pump.workStart,
+        plannedWorkEnd: pump.workEnd,
+        plannedCapacityMin: durationMin(pump.workStart, pump.workEnd),
         notes: "",
         openedBy: actorName,
         closedBy: "",
@@ -329,6 +349,83 @@ export default function ActualDayScreen({
         ) : null}
       </Card>
 
+      {/* تفصيل الساعات والتوقفات (§8) — لا يُحذف أي سجل، التجاوز يُعرض بسببه */}
+      {breakdown ? (
+        <Card className="p-4" data-testid="hours-breakdown">
+          <div className="mb-2 flex items-center gap-2">
+            <ClipboardList size={16} className="text-emerald-600" />
+            <h2 className="text-sm font-extrabold text-gray-800 dark:text-white">تفصيل الساعات</h2>
+            <Pill tone={breakdown.over ? "red" : "green"}>
+              {breakdown.over ? `تجاوز ${formatDuration(breakdown.overMin)}` : "داخل الحد"}
+            </Pill>
+          </div>
+          <div className="grid grid-cols-2 gap-2 sm:grid-cols-5">
+            <MiniStat label="الاستخدام الفعلي" value={formatDuration(breakdown.usageTotalMin)} />
+            <MiniStat label="ساعات المضخة" value={formatDuration(breakdown.capacityMin)} tone="gray" />
+            <MiniStat label="التوقفات" value={formatDuration(breakdown.stoppageMin)} tone="amber" />
+            <MiniStat label="المتاح فعلًا" value={formatDuration(breakdown.effectiveMin)} tone="gray" />
+            <MiniStat
+              label="التجاوز"
+              value={formatDuration(breakdown.overMin)}
+              tone={breakdown.over ? "red" : "green"}
+            />
+          </div>
+          {breakdown.over ? (
+            <p className="mt-2 rounded-2xl bg-red-50 px-3 py-2 text-[11px] leading-relaxed text-red-700 dark:bg-red-900/20 dark:text-red-300">
+              إجمالي الساعات {toHours(breakdown.usageTotalMin)} · ساعات المضخة المتاحة{" "}
+              {toHours(breakdown.effectiveMin)} · مقدار التجاوز {toHours(breakdown.overMin)}·
+              {breakdown.overReasons.length
+                ? ` سبب مسجَّل: ${breakdown.overReasons.join(" | ")}`
+                : " لا يوجد سبب مسجَّل للتجاوز بعد — سجّله عند تعديل الاستخدام."}
+            </p>
+          ) : null}
+          <p className="mt-2 text-[10px] text-gray-400">
+            التوقفات تُخصم من ساعات التشغيل قبل حساب التجاوز. البيانات لا تُحذف أبدًا ولا تُعدَّل تلقائيًا.
+          </p>
+        </Card>
+      ) : null}
+
+      {/* التصحيحات بعد إغلاق اليوم (§21): تُسجَّل ولا تُمنع ولا تُفقد القيمة القديمة */}
+      {dayClosed ? (
+        <Card className="p-4" data-testid="day-corrections">
+          <div className="mb-2 flex items-center gap-2">
+            <Lock size={16} className="text-amber-600" />
+            <h2 className="text-sm font-extrabold text-gray-800 dark:text-white">
+              اليوم مغلق — التعديل تصحيح موثّق
+            </h2>
+          </div>
+          <Field label="سبب التصحيح" hint="يُحفظ مع التعديل: من صحّح ومتى وماذا تغيّر وما كانت القيمة القديمة">
+            <TextInput
+              value={correctionReason}
+              onChange={(e) => setCorrectionReason(e.target.value)}
+              placeholder="مثال: خطأ في تسجيل ساعات خالد — التصحيح بموجب اتفاق الطرفين"
+              aria-label="سبب تصحيح اليوم المغلق"
+            />
+          </Field>
+          {dayCorrections.length > 0 ? (
+            <div className="mt-3 space-y-1.5">
+              <div className="text-[11px] font-extrabold text-gray-700 dark:text-slate-200">
+                سجل التصحيحات ({dayCorrections.length})
+              </div>
+              {dayCorrections.slice(0, 8).map((c) => (
+                <div
+                  key={c.id}
+                  className="rounded-2xl bg-gray-50 px-3 py-2 text-[10px] text-gray-500 dark:bg-slate-700 dark:text-slate-300"
+                >
+                  <span className="font-bold">{c.byUser}</span> · {formatClock(c.at)} · {c.entity} —{" "}
+                  {c.field}: {c.oldValue} ← {c.newValue}
+                  {c.reason ? ` · السبب: ${c.reason}` : ""}
+                </div>
+              ))}
+            </div>
+          ) : (
+            <p className="mt-2 text-[10px] text-gray-400">
+              لا توجد تصحيحات على هذا اليوم بعد.
+            </p>
+          )}
+        </Card>
+      ) : null}
+
       {/* 1) المساهمون الأساسيون — سجل مرجعي ثابت لا يتغيّر بتغيّر اليوم */}
       <ShareholdersPanel dayId={day.id} actor={actorName} />
 
@@ -402,6 +499,7 @@ export default function ActualDayScreen({
                 }}
                 onShortage={(usageId) => setShortageFor(usageId)}
                 actor={actorName}
+                correctionReason={correctionReason}
               />
             ))}
           </div>
@@ -445,7 +543,7 @@ export default function ActualDayScreen({
           </Button>
           <Button
             variant="outline"
-            onClick={() => actions.deriveEntries(day.id)}
+            onClick={() => actions.deriveEntries(day.id, { correctionReason, actor: actorName })}
             title="بناء ترتيب اليوم من الجدول الأساسي"
           >
             <RefreshCcw size={16} /> استرجاع الجدول الأساسي
@@ -481,7 +579,12 @@ export default function ActualDayScreen({
                   {s.reason || stoppageLabel(s.kind)} · {s.startTime} → {s.endTime} ({formatDuration(s.minutes)})
                 </span>
                 <button
-                  onClick={() => actions.archiveStoppage(s.id, true)}
+                  onClick={() =>
+                    actions.archiveStoppage(s.id, true, {
+                      reason: correctionReason || "أرشفة توقف (حذف ناعم)",
+                      actor: actorName,
+                    })
+                  }
                   className="rounded-lg bg-white/70 p-1 text-amber-700 dark:bg-slate-800"
                   aria-label="أرشفة التوقف"
                 >
@@ -536,7 +639,13 @@ export default function ActualDayScreen({
       />
 
       {editEntry ? (
-        <EntryEditor entry={editEntry} onClose={() => setEditEntry(null)} pumpId={pump.id} />
+        <EntryEditor
+          entry={editEntry}
+          onClose={() => setEditEntry(null)}
+          pumpId={pump.id}
+          correctionReason={correctionReason}
+          actor={actorName}
+        />
       ) : null}
 
       {usageEntry ? (
@@ -545,6 +654,7 @@ export default function ActualDayScreen({
           dayId={day.id}
           onClose={() => setUsageEntry(null)}
           actor={actorName}
+          correctionReason={correctionReason}
         />
       ) : null}
 
@@ -561,7 +671,13 @@ export default function ActualDayScreen({
       ) : null}
 
       {stoppageOpen ? (
-        <StoppageModal dayId={day.id} date={day.date} onClose={() => setStoppageOpen(false)} />
+        <StoppageModal
+          dayId={day.id}
+          date={day.date}
+          onClose={() => setStoppageOpen(false)}
+          correctionReason={correctionReason}
+          actor={actorName}
+        />
       ) : null}
 
       <Modal open={!!ackIssue} onClose={() => setAckIssue(null)} title="تجاوز التعارض بسبب موثّق">
@@ -789,6 +905,9 @@ function DialaStrip({
         workStart: pump.workStart,
         workEnd: pump.workEnd,
         capacityMin: durationMin(pump.workStart, pump.workEnd),
+        plannedWorkStart: pump.workStart,
+        plannedWorkEnd: pump.workEnd,
+        plannedCapacityMin: durationMin(pump.workStart, pump.workEnd),
         notes: "",
         openedBy: "manager",
         closedBy: "",
@@ -1026,6 +1145,7 @@ function EntryRow({
   onEditPerson,
   onShortage,
   actor,
+  correctionReason = "",
 }: {
   index: number;
   entry: DayEntry;
@@ -1036,6 +1156,7 @@ function EntryRow({
   onEditPerson: () => void;
   onShortage: (usageId: string) => void;
   actor: string;
+  correctionReason?: string;
 }) {
   const { state, actions } = useApp();
   const pump = state.pump!;
@@ -1181,7 +1302,12 @@ function EntryRow({
           <Pencil size={12} className="inline -mt-0.5" /> تعديل
         </button>
         <button
-          onClick={() => actions.removeEntry(entry.id)}
+          onClick={() =>
+            actions.removeEntry(entry.id, {
+              reason: correctionReason || "إزالة من اليوم (حذف ناعم)",
+              actor,
+            })
+          }
           className="rounded-xl bg-red-50 px-3 py-1.5 text-[11px] font-bold text-red-600 dark:bg-red-900/30 dark:text-red-300"
         >
           <Trash2 size={12} className="inline -mt-0.5" /> إزالة
@@ -1307,10 +1433,14 @@ function EntryEditor({
   entry,
   onClose,
   pumpId,
+  correctionReason = "",
+  actor = "manager",
 }: {
   entry: DayEntry;
   onClose: () => void;
   pumpId: string;
+  correctionReason?: string;
+  actor?: string;
 }) {
   const { state, actions } = useApp();
   const [form, setForm] = useState<DayEntry>(entry);
@@ -1415,7 +1545,11 @@ function EntryEditor({
           <Button
             className="flex-1"
             onClick={() => {
-              actions.saveEntry({ ...form, plannedMin: minutes }, false);
+              actions.saveEntry({ ...form, plannedMin: minutes }, false, {
+                correctionReason:
+                  correctionReason || (form.reason ? `سبب الصف: ${form.reason}` : ""),
+                actor,
+              });
               onClose();
             }}
           >
@@ -1458,11 +1592,13 @@ function UsageModal({
   dayId,
   onClose,
   actor,
+  correctionReason = "",
 }: {
   entry: DayEntry;
   dayId: string;
   onClose: () => void;
   actor: string;
+  correctionReason?: string;
 }) {
   const { state, actions } = useApp();
   const pump = state.pump!;
@@ -1480,12 +1616,30 @@ function UsageModal({
   const [notes, setNotes] = useState(existing?.notes ?? "");
   const [reason, setReason] = useState("");
   const [picking, setPicking] = useState(false);
+  /** سعر الديزل الشخصي لهذه العملية (§9) — لا يُستخدم سعر المضخة لتكلفة المستخدم */
+  const [personalFuelPrice, setPersonalFuelPrice] = useState(
+    existing?.personalFuelPriceSnapshot ?? 0
+  );
+  /** تأكيد التجاوز/التداخل بعد عرضه (§7) */
+  const [overlapAck, setOverlapAck] = useState(false);
 
-  const draft = computeUsageDraft(pump, day, startTime, endTime);
+  const window = pumpWindow(pump, day);
+  const stoppageMin = stoppageMinutesInRange(
+    state,
+    day.id,
+    startTime,
+    endTime,
+    timeToMinutes(window.start),
+    window.capacityMin
+  );
+  const draft = computeUsageDraft(pump, day, startTime, endTime, { personalFuelPrice, stoppageMin });
   const shareholder = shareholderOfPerson(state, pump.id, personId);
   const right = shareholder ? currentRight(state, shareholder.id, day.date) : null;
+  const overlaps = overlapsFor(state, day, pump, startTime, endTime, existing?.id ?? null);
+  const breakdown = capacityBreakdown(state, day, pump, draft.minutes, existing?.id ?? null);
+  const usedPrice = draft.personalFuelPriceSnapshot > 0 ? draft.personalFuelPriceSnapshot : draft.fuelPriceSnapshot;
   const shortageAmount = Math.min(
-    Math.round(shortageLiters * (draft.fuelPriceSnapshot || 0)),
+    Math.round(shortageLiters * (usedPrice || 0)),
     Math.round(draft.fuelAmountDue)
   );
   const dieselOwed =
@@ -1513,21 +1667,73 @@ function UsageModal({
           </Field>
         </div>
 
+        <Field
+          label="سعر لتر الديزل عندك اليوم"
+          hint="يُحسب بهذه العملية فقط: اللترات × سعرك = تكلفتك. اتركه 0 لاستخدام السعر المرجعي للمضخة"
+        >
+          <NumberInput
+            value={personalFuelPrice}
+            onChange={(e) => setPersonalFuelPrice(Number(e.target.value))}
+            aria-label="سعر لتر الديزل الشخصي"
+          />
+        </Field>
+
         <div className="grid grid-cols-2 gap-2 rounded-2xl bg-gray-50 p-3 text-[11px] dark:bg-slate-700">
           <Row
             label="عدد الساعات المستخدمة"
             value={`${formatDuration(draft.minutes)}${draft.crossesMidnight ? " (يعبر منتصف الليل)" : ""}`}
           />
-          <Row label="الاستهلاك" value={`${draft.fuelLiters} لتر`} />
-          <Row label="سعر اللتر (مرجعي)" value={`${draft.fuelPriceSnapshot}`} />
-          <Row label="قيمة الديزل" value={formatMoney(draft.fuelAmountDue, pump.currency)} />
+          <Row label="الاستهلاك (لتر/ساعة)" value={`${draft.fuelPerHourSnapshot}`} />
+          <Row label="اللترات" value={`${draft.fuelLiters} لتر`} />
+          <Row
+            label={draft.personalFuelPriceSnapshot > 0 ? "سعرك الشخصي" : "سعر اللتر (مرجعي)"}
+            value={`${usedPrice}`}
+          />
+          <Row label="تكلفة الديزل" value={formatMoney(draft.fuelAmountDue, pump.currency)} />
           <Row label="الرواسة" value={formatMoney(draft.royaltyAmountDue, pump.currency)} />
           <Row label="المسؤول عن التكلفة" value={findPerson(state, personId)?.name ?? "—"} />
+          <Row label="توقف داخل الفترة" value={formatDuration(draft.stoppageMin)} />
           <div className="col-span-2 text-[10px] leading-relaxed text-gray-400">
-            هذه القيم تُحفظ داخل عملية الاستخدام (Snapshot) — أي تغيير في سعر الديزل أو الرواسة لاحقًا لا يعيد
-            حساب هذه العملية.
+            تُحفظ هذه القيم داخل العملية (Snapshot): اللترات = الساعات × استهلاك الساعة، والتكلفة = اللترات ×
+            السعر. أي تغيير لاحق في سعر الديزل أو استهلاك المضخة لا يعيد حساب هذه العملية.
           </div>
         </div>
+
+        {overlaps.length > 0 ? (
+          <div
+            className="space-y-2 rounded-2xl border border-amber-300 bg-amber-50 px-3 py-3 text-[11px] text-amber-900 dark:border-amber-900/40 dark:bg-amber-900/20 dark:text-amber-200"
+            data-testid="overlap-warning"
+          >
+            <div className="font-extrabold">
+              <AlertTriangle size={13} className="inline -mt-0.5" /> تعارض في الأوقات ({overlaps.length}) — لم
+              يُحذف أي سجل
+            </div>
+            {overlaps.map((o) => (
+              <div key={o.usageId} className="rounded-xl bg-white/70 px-2.5 py-1.5 dark:bg-slate-800">
+                {o.personName}: {o.startTime} → {o.endTime} — تداخل {formatDuration(o.minutes)}
+              </div>
+            ))}
+            <label className="flex items-center justify-between gap-2 rounded-xl bg-white/70 px-2.5 py-2 dark:bg-slate-800">
+              <span className="font-bold">أؤكد التسجيل مع وجود التعارض (يُحفظ السبب)</span>
+              <input
+                type="checkbox"
+                checked={overlapAck}
+                onChange={(e) => setOverlapAck(e.target.checked)}
+                className="h-5 w-5 accent-amber-600"
+                aria-label="تأكيد التعارض"
+              />
+            </label>
+          </div>
+        ) : null}
+
+        {breakdown.over ? (
+          <div className="rounded-2xl border border-red-200 bg-red-50 px-3 py-2 text-[11px] text-red-700 dark:border-red-900/40 dark:bg-red-900/20 dark:text-red-300">
+            إجمالي الساعات بعد هذه العملية {toHours(breakdown.usageTotalMin)} · ساعات المضخة المتاحة{" "}
+            {toHours(breakdown.effectiveMin)} ({toHours(breakdown.capacityMin)} تشغيل −{" "}
+            {toHours(breakdown.stoppageMin)} توقف) · مقدار التجاوز {toHours(breakdown.overMin)} — يُحفظ السبب مع
+            العملية ولا يُحذف أي سجل.
+          </div>
+        ) : null}
 
         <Field label="نوع الاستخدام">
           <Select value={usageType} onChange={(e) => setUsageType(e.target.value as UsageType)}>
@@ -1641,19 +1847,27 @@ function UsageModal({
                 usageType,
                 startTime,
                 endTime,
-                notes,
+                notes: notes || (overlaps.length > 0 ? `تعارض موقّع عليه — ${reason}` : notes),
                 dieselSettlement,
                 dieselShortageLiters: dieselSettlement === "shortage" ? shortageLiters : 0,
                 royaltyPayMode,
                 settlementNote: notes,
                 overCapacityReason: reason,
+                personalFuelPrice,
+                confirmedOverlap: overlapAck,
+                correctionReason,
                 actor,
               });
               onClose();
             }}
-            disabled={draft.minutes <= 0}
+            disabled={draft.minutes <= 0 || (overlaps.length > 0 && !overlapAck)}
           >
-            <Droplets size={16} /> {existing ? "حفظ كسجل جديد" : "تسجيل الاستخدام"}
+            <Droplets size={16} />{" "}
+            {overlaps.length > 0 && !overlapAck
+              ? "أكّد التعارض أولًا"
+              : existing
+                ? "حفظ كسجل جديد"
+                : "تسجيل الاستخدام"}
           </Button>
         </div>
         <p className="text-[10px] text-gray-400">
@@ -1678,10 +1892,14 @@ function StoppageModal({
   dayId,
   date,
   onClose,
+  correctionReason = "",
+  actor = "manager",
 }: {
   dayId: string;
   date: string;
   onClose: () => void;
+  correctionReason?: string;
+  actor?: string;
 }) {
   const { state, actions } = useApp();
   const pump = state.pump!;
@@ -1740,7 +1958,7 @@ function StoppageModal({
               createdBy: "manager",
               archived: false,
             };
-            actions.saveStoppage(stoppage, true);
+            actions.saveStoppage(stoppage, true, { correctionReason, actor });
             onClose();
           }}
           disabled={minutes <= 0}

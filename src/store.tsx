@@ -4,6 +4,7 @@ import {
   useEffect,
   useMemo,
   useReducer,
+  useRef,
   type ReactNode,
 } from "react";
 import type {
@@ -12,6 +13,9 @@ import type {
   AppState,
   AuditLog,
   ConflictAck,
+  ConflictStatus,
+  DayCorrection,
+  Debt,
   DialaDay,
   DialaRound,
   DayEntry,
@@ -19,6 +23,7 @@ import type {
   FuelRecord,
   MatchStatus,
   OperatorRecord,
+  Payment,
   Person,
   PersonalRecord,
   Pump,
@@ -30,19 +35,29 @@ import type {
   SyncItem,
   Theme,
   Transaction,
+  TransferEvent,
   UsageType,
 } from "./domain/types";
-import { durationMin, isoToShort, nowTime, todayISO, uid } from "./domain/util";
+import { durationMin, isoToShort, nowTime, timeToMinutes, todayISO, uid } from "./domain/util";
 import {
   computeUsageDraft,
+  conflictTypeLabel,
   dayEntries as entriesOfDay,
+  debtStatusOf,
+  detectConflicts,
   dieselSettlementLabel,
   findPerson,
+  mergeConflicts,
+  paymentMethodLabel,
   personBalance,
   planEntriesFromSchedule,
   roundOfDay,
   royaltyModeLabel,
   settlementPostings,
+  stoppageMinutesInRange,
+  transferTypeLabel,
+  pumpWindow,
+  type DetectedConflict,
 } from "./domain/rules";
 import { emptyState, migrateV1, normalizeState, seedDemo } from "./domain/migrate";
 import { LEGACY_MANAGER_STORAGE_KEY as LEGACY_KEY, MANAGER_STORAGE_KEY as STORAGE_KEY } from "./domain/storage";
@@ -74,11 +89,11 @@ export type Action =
   | { type: "LOCK_ROUND"; id: string; actor: string }
   | { type: "UNLOCK_ROUND"; id: string; reason: string; actor: string }
   | { type: "ARCHIVE_ROUND"; id: string; archived: boolean; reason?: string; actor?: string; force?: boolean }
-  | { type: "SAVE_ENTRY"; entry: DayEntry; isNew: boolean }
-  | { type: "SAVE_ENTRIES"; dayId: string; entries: DayEntry[] }
+  | { type: "SAVE_ENTRY"; entry: DayEntry; isNew: boolean; correctionReason?: string; actor?: string }
+  | { type: "SAVE_ENTRIES"; dayId: string; entries: DayEntry[]; correctionReason?: string; actor?: string }
   | { type: "MOVE_ENTRY"; id: string; dir: -1 | 1 }
-  | { type: "DERIVE_ENTRIES"; dayId: string }
-  | { type: "REMOVE_ENTRY"; id: string }
+  | { type: "DERIVE_ENTRIES"; dayId: string; correctionReason?: string; actor?: string }
+  | { type: "REMOVE_ENTRY"; id: string; reason?: string; actor?: string }
   | {
       type: "RECORD_USAGE";
       dayId: string;
@@ -95,6 +110,11 @@ export type Action =
       royaltyPayMode: RoyaltyPayMode;
       settlementNote: string;
       overCapacityReason: string;
+      /** السعر الذي سجّله المستخدم لهذه العملية (§9) */
+      personalFuelPrice?: number;
+      /** تأكيد التجاوز/التداخل بعد العرض — لا يُحذف أي سجل */
+      confirmedOverlap?: boolean;
+      correctionReason?: string;
       actor: string;
     }
   | {
@@ -108,8 +128,8 @@ export type Action =
       reason: string;
     }
   | { type: "VOID_USAGE"; id: string; reason: string; actor: string }
-  | { type: "SAVE_STOPPAGE"; stoppage: Stoppage; isNew: boolean }
-  | { type: "ARCHIVE_STOPPAGE"; id: string; archived: boolean }
+  | { type: "SAVE_STOPPAGE"; stoppage: Stoppage; isNew: boolean; correctionReason?: string; actor?: string }
+  | { type: "ARCHIVE_STOPPAGE"; id: string; archived: boolean; reason?: string; actor?: string }
   | { type: "SAVE_FUEL"; record: FuelRecord; isNew: boolean }
   | { type: "ARCHIVE_FUEL"; id: string; archived: boolean }
   | { type: "SAVE_OPERATOR"; record: OperatorRecord; isNew: boolean }
@@ -123,6 +143,30 @@ export type Action =
       actor: string;
     }
   | { type: "VOID_TRANSACTION"; id: string; reason: string; actor: string }
+  | {
+      type: "ADD_DEBT";
+      debt: Debt;
+      txKind?: Transaction["kind"];
+      actor: string;
+    }
+  | {
+      type: "ADD_PAYMENT";
+      payment: Payment;
+      actor: string;
+    }
+  | { type: "VOID_PAYMENT"; id: string; reason: string; actor: string }
+  | { type: "CANCEL_DEBT"; id: string; reason: string; actor: string }
+  | { type: "ADD_TRANSFER_EVENT"; event: TransferEvent; tx: Transaction | null; actor: string }
+  | { type: "CANCEL_TRANSFER_EVENT"; id: string; reason: string; actor: string }
+  | { type: "SYNC_CONFLICTS"; detected: DetectedConflict[]; actor?: string }
+  | {
+      type: "RESOLVE_CONFLICT";
+      id: string;
+      status: ConflictStatus;
+      resolution: string;
+      notes: string;
+      actor: string;
+    }
   | { type: "SAVE_PERSONAL"; record: PersonalRecord; isNew: boolean }
   | { type: "ARCHIVE_PERSONAL"; id: string; archived: boolean }
   | {
@@ -151,6 +195,7 @@ interface LogInput {
   reason?: string;
   actor?: string;
   actorRole?: "manager" | "user" | "system";
+  source?: AuditLog["source"];
   notify?: Omit<AppNotification, "id" | "at" | "read">[];
   op?: SyncItem["op"];
 }
@@ -171,10 +216,12 @@ function commit(_prev: AppState, next: AppState, log: LogInput): AppState {
     actorRole: log.actorRole ?? "manager",
     action: log.action,
     entity: log.entity,
+    entityType: log.entity,
     entityId: log.entityId,
     summary: log.summary,
     before: short(log.before),
     after: short(log.after),
+    source: log.source ?? (log.actorRole === "user" ? "user_app" : "screen"),
     reason: log.reason ?? "",
     deviceId: next.settings.deviceId,
     synced: false,
@@ -201,6 +248,49 @@ function commit(_prev: AppState, next: AppState, log: LogInput): AppState {
     syncQueue: [sync, ...next.syncQueue].slice(0, 500),
     notifications: [...notifications, ...next.notifications].slice(0, 200),
   };
+}
+
+/**
+ * التصحيح بعد إغلاق اليوم (§21): لا تُمنع التصحيحات، لكن كل تصحيح
+ * يُسجَّل كسجل مستقل بقيمته القديمة والجديدة ومن قام به وسببه.
+ */
+function withCorrection(
+  state: AppState,
+  dayId: string,
+  entity: string,
+  entityId: string,
+  field: string,
+  oldValue: unknown,
+  newValue: unknown,
+  reason: string,
+  actor: string
+): DayCorrection[] {
+  const day = state.days.find((d) => d.id === dayId);
+  if (!day) return state.corrections;
+  const closed = day.status === "closed" || day.status === "revised";
+  if (!closed) return state.corrections;
+  const correction: DayCorrection = {
+    id: uid("cr"),
+    pumpId: day.pumpId,
+    dayId,
+    date: day.date,
+    entity,
+    entityId,
+    field,
+    oldValue: short(oldValue),
+    newValue: short(newValue),
+    reason: reason || "تصحيح بعد إغلاق اليوم — بدون سبب مسجّل",
+    byUser: actor || "manager",
+    at: new Date().toISOString(),
+  };
+  return [correction, ...state.corrections].slice(0, 800);
+}
+
+/** هل اليوم مغلقًا؟ (يحتاج سببًا موثّقًا للتصحيح) */
+function dayIsClosed(state: AppState, dayId: string | null): boolean {
+  if (!dayId) return false;
+  const day = state.days.find((d) => d.id === dayId);
+  return day?.status === "closed" || day?.status === "revised";
 }
 
 /** رفض عملية غير مسموح بها (مثل حذف يوم داخل ديالة محفوظة) مع تسجيلها في سجل التدقيق */
@@ -266,17 +356,26 @@ function reducer(state: AppState, action: Action): AppState {
 
     case "ARCHIVE_PERSON": {
       const person = state.persons.find((p) => p.id === action.id);
+      const at = new Date().toISOString();
       const next = {
         ...state,
         persons: state.persons.map((p) =>
-          p.id === action.id ? { ...p, archived: action.archived } : p
+          p.id === action.id
+            ? {
+                ...p,
+                archived: action.archived,
+                deletedAt: action.archived ? at : undefined,
+                deletedBy: action.archived ? "manager" : undefined,
+                deletionReason: action.archived ? "أرشفة (حذف ناعم)" : undefined,
+              }
+            : p
         ),
       };
       return commit(state, next, {
         action: action.archived ? "archive" : "restore",
         entity: "person",
         entityId: action.id,
-        summary: `${action.archived ? "أرشفة (حذف ناعم)" : "إعادة تفعيل"} شخص: ${person?.name ?? action.id}`,
+        summary: `${action.archived ? "أرشفة (حذف ناعم — السجل محفوظ)" : "إعادة تفعيل"} شخص: ${person?.name ?? action.id}`,
         before: person,
         after: { ...person, archived: action.archived },
       });
@@ -308,10 +407,19 @@ function reducer(state: AppState, action: Action): AppState {
 
     case "ARCHIVE_SHAREHOLDER": {
       const sh = state.shareholders.find((s) => s.id === action.id);
+      const at = new Date().toISOString();
       const next = {
         ...state,
         shareholders: state.shareholders.map((s) =>
-          s.id === action.id ? { ...s, archived: action.archived } : s
+          s.id === action.id
+            ? {
+                ...s,
+                archived: action.archived,
+                deletedAt: action.archived ? at : undefined,
+                deletedBy: action.archived ? "manager" : undefined,
+                deletionReason: action.archived ? "أرشفة سهم (حذف ناعم)" : undefined,
+              }
+            : s
         ),
       };
       return commit(state, next, {
@@ -405,10 +513,19 @@ function reducer(state: AppState, action: Action): AppState {
     case "CANCEL_RIGHT": {
       const right = state.rights.find((r) => r.id === action.id);
       if (!right) return state;
+      const at = new Date().toISOString();
       const next = {
         ...state,
         rights: state.rights.map((r) =>
-          r.id === action.id ? { ...r, status: "cancelled" as const } : r
+          r.id === action.id
+            ? {
+                ...r,
+                status: "cancelled" as const,
+                deletedAt: at,
+                deletedBy: "manager",
+                deletionReason: action.reason,
+              }
+            : r
         ),
       };
       return commit(state, next, {
@@ -427,6 +544,16 @@ function reducer(state: AppState, action: Action): AppState {
       const exists = state.days.find((d) => d.date === action.day.date && !d.archived);
       if (exists) return state;
       if (action.planFromSchedule && !state.pump) return state;
+      /** الجدول الأساسي يُثبَّت مرة واحدة عند الإنشاء، ثم لا يتغيّر بتعديل اليوم الفعلي (§4) */
+      const dayRecord: DialaDay = {
+        ...action.day,
+        plannedWorkStart: action.day.plannedWorkStart || action.day.workStart,
+        plannedWorkEnd: action.day.plannedWorkEnd || action.day.workEnd,
+        plannedCapacityMin:
+          action.day.plannedCapacityMin ||
+          action.day.capacityMin ||
+          durationMin(action.day.workStart, action.day.workEnd),
+      };
       const entries = action.planFromSchedule
         ? planEntriesFromSchedule(
             state,
@@ -437,7 +564,7 @@ function reducer(state: AppState, action: Action): AppState {
         : action.entries.map((e) => ({ ...e, dayId: action.day.id }));
       const next = {
         ...state,
-        days: [...state.days, action.day],
+        days: [...state.days, dayRecord],
         entries: [...state.entries, ...entries],
         counters: { ...state.counters, diala: Math.max(state.counters.diala, action.day.dialaNumber + 1) },
       };
@@ -470,11 +597,26 @@ function reducer(state: AppState, action: Action): AppState {
           d.id === action.id ? { ...d, ...action.patch, updatedAt: new Date().toISOString() } : d
         ),
       };
-      return commit(state, next, {
+      const beforeValues: Record<string, unknown> = {};
+      for (const key of Object.keys(action.patch)) {
+        beforeValues[key] = (before as unknown as Record<string, unknown>)[key];
+      }
+      const corrections = withCorrection(
+        state,
+        action.id,
+        "day",
+        action.id,
+        Object.keys(action.patch).join(","),
+        beforeValues,
+        action.patch,
+        "تعديل بيانات اليوم",
+        "manager"
+      );
+      return commit(state, { ...next, corrections }, {
         action: "update",
         entity: "day",
         entityId: action.id,
-        summary: `تعديل اليوم ${before.date}`,
+        summary: `تعديل اليوم ${before.date}${dayIsClosed(state, action.id) ? " (بعد الإغلاق — سُجّل تصحيح)" : ""}`,
         before,
         after: { ...before, ...action.patch },
       });
@@ -596,15 +738,27 @@ function reducer(state: AppState, action: Action): AppState {
           ],
         });
       }
+      const at = new Date().toISOString();
       const next = {
         ...state,
-        days: state.days.map((d) => (d.id === action.id ? { ...d, archived: action.archived } : d)),
+        days: state.days.map((d) =>
+          d.id === action.id
+            ? {
+                ...d,
+                archived: action.archived,
+                updatedAt: at,
+                deletedAt: action.archived ? at : undefined,
+                deletedBy: action.archived ? action.actor ?? "manager" : undefined,
+                deletionReason: action.archived ? action.reason ?? "أرشفة يوم (حذف ناعم)" : undefined,
+              }
+            : d
+        ),
       };
       return commit(state, next, {
         action: action.archived ? "archive" : "restore",
         entity: "day",
         entityId: action.id,
-        summary: `${action.archived ? "أرشفة" : "إعادة تفعيل"} اليوم ${before.date}`,
+        summary: `${action.archived ? "أرشفة (حذف ناعم — السجل محفوظ)" : "إعادة تفعيل"} اليوم ${before.date}`,
         before,
         after: { ...before, archived: action.archived },
         reason: action.reason ?? "",
@@ -633,6 +787,9 @@ function reducer(state: AppState, action: Action): AppState {
           workStart: pump.workStart,
           workEnd: pump.workEnd,
           capacityMin,
+          plannedWorkStart: pump.workStart,
+          plannedWorkEnd: pump.workEnd,
+          plannedCapacityMin: capacityMin,
           notes: "",
           openedBy: "manager",
           closedBy: "",
@@ -808,13 +965,26 @@ function reducer(state: AppState, action: Action): AppState {
         ];
       }
       const next = { ...state, entries: normalizeOrders(entries) };
-      return commit(state, next, {
+      const corrections = withCorrection(
+        state,
+        action.entry.dayId,
+        "entry",
+        action.entry.id,
+        "times",
+        before ? `${before.startTime} → ${before.endTime}` : "",
+        `${action.entry.startTime} → ${action.entry.endTime}`,
+        action.correctionReason ?? "",
+        action.actor ?? "manager"
+      );
+      return commit(state, { ...next, corrections }, {
         action: exists ? "update" : "create",
         entity: "entry",
         entityId: action.entry.id,
         summary: `${exists ? "تعديل" : "إضافة"} ${findPerson(state, action.entry.personId)?.name ?? ""} في اليوم (${action.entry.startTime} → ${action.entry.endTime})`,
         before,
         after: action.entry,
+        reason: action.correctionReason,
+        actor: action.actor,
         op: exists ? "update" : "create",
       });
     }
@@ -822,12 +992,25 @@ function reducer(state: AppState, action: Action): AppState {
     case "SAVE_ENTRIES": {
       const others = state.entries.filter((e) => e.dayId !== action.dayId);
       const next = { ...state, entries: [...others, ...normalizeOrders(action.entries)] };
-      return commit(state, next, {
+      const corrections = withCorrection(
+        state,
+        action.dayId,
+        "day",
+        action.dayId,
+        "entries",
+        entriesOfDay(state, action.dayId).map((e) => ({ p: e.personId, t: `${e.startTime}-${e.endTime}` })),
+        action.entries.map((e) => ({ p: e.personId, t: `${e.startTime}-${e.endTime}` })),
+        action.correctionReason ?? "",
+        action.actor ?? "manager"
+      );
+      return commit(state, { ...next, corrections }, {
         action: "update",
         entity: "day",
         entityId: action.dayId,
         summary: `إعادة ترتيب اليوم (${action.entries.length} صف)`,
         after: action.entries.map((e) => ({ p: e.personId, o: e.orderIndex })),
+        reason: action.correctionReason,
+        actor: action.actor,
       });
     }
 
@@ -870,29 +1053,66 @@ function reducer(state: AppState, action: Action): AppState {
         ...state,
         entries: [...state.entries.filter((e) => e.dayId !== action.dayId), ...derived],
       };
-      return commit(state, next, {
+      const corrections = withCorrection(
+        state,
+        day.id,
+        "day",
+        day.id,
+        "plan",
+        entriesOfDay(state, day.id).length,
+        derived.length,
+        action.correctionReason ?? "استرجاع الجدول الأساسي",
+        action.actor ?? "manager"
+      );
+      return commit(state, { ...next, corrections }, {
         action: "update",
         entity: "day",
         entityId: action.dayId,
         summary: `استرجاع الجدول الأساسي في اليوم ${day.date} (${derived.length} شخص)`,
+        reason: action.correctionReason,
+        actor: action.actor,
       });
     }
 
     case "REMOVE_ENTRY": {
       const entry = state.entries.find((e) => e.id === action.id);
       if (!entry) return state;
+      const at = new Date().toISOString();
       const next = {
         ...state,
         entries: normalizeOrders(
-          state.entries.map((e) => (e.id === action.id ? { ...e, archived: true } : e))
+          state.entries.map((e) =>
+            e.id === action.id
+              ? {
+                  ...e,
+                  archived: true,
+                  deletedAt: at,
+                  deletedBy: action.actor ?? "manager",
+                  deletionReason: action.reason ?? "إزالة من اليوم (حذف ناعم)",
+                }
+              : e
+          )
         ),
       };
-      return commit(state, next, {
+      const corrections = withCorrection(
+        state,
+        entry.dayId,
+        "entry",
+        entry.id,
+        "archived",
+        false,
+        true,
+        action.reason ?? "",
+        action.actor ?? "manager"
+      );
+      return commit(state, { ...next, corrections }, {
         action: "delete",
         entity: "entry",
         entityId: action.id,
-        summary: `إزالة ${findPerson(state, entry.personId)?.name ?? ""} من اليوم (حذف ناعم)`,
+        summary: `إزالة ${findPerson(state, entry.personId)?.name ?? ""} من اليوم (حذف ناعم — التاريخ محفوظ)`,
         before: entry,
+        reason: action.reason,
+        actor: action.actor,
         op: "delete",
       });
     }
@@ -902,16 +1122,28 @@ function reducer(state: AppState, action: Action): AppState {
       if (!state.pump) return state;
       const day = state.days.find((d) => d.id === action.dayId);
       if (!day) return state;
-      const draft = computeUsageDraft(
-        state.pump,
-        day,
+      const window = pumpWindow(state.pump, day);
+      const anchor = timeToMinutes(window.start);
+      const stoppageMin = stoppageMinutesInRange(
+        state,
+        day.id,
         action.startTime,
-        action.endTime
+        action.endTime,
+        anchor,
+        window.capacityMin
       );
+      const draft = computeUsageDraft(state.pump, day, action.startTime, action.endTime, {
+        personalFuelPrice: action.personalFuelPrice ?? 0,
+        stoppageMin,
+      });
       const dayList = state.usages.filter((u) => u.dayId === day.id && u.status === "active");
       const totalMin = dayList.reduce((s, u) => s + u.minutes, 0) + draft.minutes;
-      const capacity = durationMin(day.workStart, day.workEnd);
-      const overCapacity = totalMin > capacity + 1;
+      const stoppageTotal = state.stoppages
+        .filter((s) => s.dayId === day.id && !s.archived)
+        .reduce((s, st) => s + st.minutes, 0);
+      const effectiveCapacity = Math.max(0, window.capacityMin - stoppageTotal);
+      const overCapacity = totalMin > effectiveCapacity + 1;
+      const at = new Date().toISOString();
       const usage: ActualUsage = {
         id: uid("us"),
         pumpId: day.pumpId,
@@ -929,19 +1161,26 @@ function reducer(state: AppState, action: Action): AppState {
         fuelPerHourSnapshot: draft.fuelPerHourSnapshot,
         fuelLiters: draft.fuelLiters,
         fuelPriceSnapshot: draft.fuelPriceSnapshot,
+        personalFuelPriceSnapshot: draft.personalFuelPriceSnapshot,
+        fuelCost: draft.fuelCost,
         fuelAmountDue: draft.fuelAmountDue,
         royaltyHourlySnapshot: draft.royaltyHourlySnapshot,
         royaltyAmountDue: draft.royaltyAmountDue,
+        stoppageMin: draft.stoppageMin,
+        transferEventId: null,
         dieselSettlement: action.dieselSettlement,
         dieselShortageLiters: Math.max(0, action.dieselShortageLiters || 0),
         royaltyPayMode: action.royaltyPayMode,
         settlementNote: action.settlementNote,
         overCapacity,
         overCapacityReason: overCapacity ? action.overCapacityReason : "",
+        overCapacityMin: overCapacity ? Math.round(totalMin - effectiveCapacity) : 0,
         notes: action.notes,
+        source: "manager",
         status: "active",
-        createdAt: new Date().toISOString(),
+        createdAt: at,
         createdBy: action.actor,
+        updatedAt: at,
       };
 
       const newTx: Transaction[] = settlementPostings(usage).map((p) =>
@@ -961,14 +1200,27 @@ function reducer(state: AppState, action: Action): AppState {
           : state.entries,
         transactions: [...state.transactions, ...newTx],
       };
-      return commit(state, next, {
+      const corrections = withCorrection(
+        state,
+        day.id,
+        "usage",
+        usage.id,
+        "create",
+        "",
+        `${action.startTime} → ${action.endTime} (${draft.minutes} دقيقة)`,
+        action.correctionReason ?? "",
+        action.actor
+      );
+      return commit(state, { ...next, corrections }, {
         action: "create",
         entity: "usage",
         entityId: usage.id,
-        summary: `تسجيل استخدام فعلي: ${person?.name ?? ""} — ${action.startTime} → ${action.endTime} (${Math.round(draft.minutes)} دقيقة، ${draft.fuelLiters} لتر) · ديزل: ${dieselSettlementLabel(
+        summary: `تسجيل استخدام فعلي: ${person?.name ?? ""} — ${action.startTime} → ${action.endTime} (${Math.round(draft.minutes)} دقيقة، ${draft.fuelLiters} لتر${draft.personalFuelPriceSnapshot > 0 ? ` بسعر المستخدم ${draft.personalFuelPriceSnapshot}` : ""}) · ديزل: ${dieselSettlementLabel(
           usage.dieselSettlement
         )} · رواسة: ${royaltyModeLabel(usage.royaltyPayMode)}`,
         after: usage,
+        reason: action.correctionReason,
+        actor: action.actor,
         op: "create",
         notify: [
           {
@@ -1000,6 +1252,7 @@ function reducer(state: AppState, action: Action): AppState {
         dieselShortageLiters: Math.max(0, action.dieselShortageLiters || 0),
         royaltyPayMode: action.royaltyPayMode,
         settlementNote: action.settlementNote,
+        updatedAt: new Date().toISOString(),
       };
       // الحركات السابقة لهذه العملية تُلغى (لا تُحذف) ثم تُسجَّل الحركات الجديدة
       const at = new Date().toISOString();
@@ -1022,7 +1275,18 @@ function reducer(state: AppState, action: Action): AppState {
         usages: state.usages.map((u) => (u.id === updated.id ? updated : u)),
         transactions: [...voidedTx, ...newTx],
       };
-      return commit(state, next, {
+      const corrections = withCorrection(
+        state,
+        usage.dayId,
+        "usage",
+        usage.id,
+        "settlement",
+        `${usage.dieselSettlement}/${usage.royaltyPayMode}`,
+        `${updated.dieselSettlement}/${updated.royaltyPayMode}`,
+        action.reason,
+        action.actor
+      );
+      return commit(state, { ...next, corrections }, {
         action: "update",
         entity: "usage",
         entityId: updated.id,
@@ -1055,11 +1319,31 @@ function reducer(state: AppState, action: Action): AppState {
     case "VOID_USAGE": {
       const usage = state.usages.find((u) => u.id === action.id);
       if (!usage) return state;
+      const at = new Date().toISOString();
       const next = {
         ...state,
-        usages: state.usages.map((u) => (u.id === action.id ? { ...u, status: "void" as const } : u)),
+        usages: state.usages.map((u) =>
+          u.id === action.id
+            ? {
+                ...u,
+                status: "void" as const,
+                updatedAt: at,
+                deletedAt: at,
+                deletedBy: action.actor,
+                deletionReason: action.reason,
+              }
+            : u
+        ),
         transactions: state.transactions.map((t) =>
-          t.usageId === action.id && t.status === "posted" ? { ...t, status: "void" as const } : t
+          t.usageId === action.id && t.status === "posted"
+            ? {
+                ...t,
+                status: "void" as const,
+                deletedAt: at,
+                deletedBy: action.actor,
+                deletionReason: action.reason,
+              }
+            : t
         ),
         entries: state.entries.map((e) =>
           e.usageId === action.id
@@ -1067,11 +1351,22 @@ function reducer(state: AppState, action: Action): AppState {
             : e
         ),
       };
-      return commit(state, next, {
+      const corrections = withCorrection(
+        state,
+        usage.dayId,
+        "usage",
+        usage.id,
+        "status",
+        "active",
+        "void",
+        action.reason,
+        action.actor
+      );
+      return commit(state, { ...next, corrections }, {
         action: "cancel",
         entity: "usage",
         entityId: action.id,
-        summary: `إلغاء استخدام (${findPerson(state, usage.personId)?.name ?? ""}) بتاريخ ${usage.date}`,
+        summary: `إلغاء استخدام (${findPerson(state, usage.personId)?.name ?? ""}) بتاريخ ${usage.date} — السجل يبقى في التاريخ بحالته الملغاة`,
         before: usage,
         after: { ...usage, status: "void" },
         reason: action.reason,
@@ -1092,18 +1387,34 @@ function reducer(state: AppState, action: Action): AppState {
     /* --------------------- التوقفات والوقود والرواسة ------------------- */
     case "SAVE_STOPPAGE": {
       const exists = state.stoppages.some((s) => s.id === action.stoppage.id);
+      const before = state.stoppages.find((s) => s.id === action.stoppage.id);
       const next = {
         ...state,
         stoppages: exists
           ? state.stoppages.map((s) => (s.id === action.stoppage.id ? action.stoppage : s))
           : [...state.stoppages, action.stoppage],
       };
-      return commit(state, next, {
+      const corrections = action.stoppage.dayId
+        ? withCorrection(
+            state,
+            action.stoppage.dayId,
+            "stoppage",
+            action.stoppage.id,
+            exists ? "edit" : "create",
+            before ? `${before.startTime} → ${before.endTime}` : "",
+            `${action.stoppage.startTime} → ${action.stoppage.endTime}`,
+            action.correctionReason ?? action.stoppage.reason,
+            action.actor ?? action.stoppage.createdBy
+          )
+        : state.corrections;
+      return commit(state, { ...next, corrections }, {
         action: exists ? "update" : "create",
         entity: "stoppage",
         entityId: action.stoppage.id,
-        summary: `تسجيل توقف (${action.stoppage.reason}) — ${action.stoppage.minutes} دقيقة`,
+        summary: `تسجيل توقف (${action.stoppage.reason}) — ${action.stoppage.minutes} دقيقة (يُخصم من ساعات التشغيل)`,
         after: action.stoppage,
+        reason: action.correctionReason,
+        actor: action.actor,
         op: exists ? "update" : "create",
         notify: [
           {
@@ -1118,22 +1429,40 @@ function reducer(state: AppState, action: Action): AppState {
       });
     }
 
-    case "ARCHIVE_STOPPAGE":
+    case "ARCHIVE_STOPPAGE": {
+      const before = state.stoppages.find((s) => s.id === action.id);
+      const at = new Date().toISOString();
       return commit(
         state,
         {
           ...state,
           stoppages: state.stoppages.map((s) =>
-            s.id === action.id ? { ...s, archived: action.archived } : s
+            s.id === action.id
+              ? {
+                  ...s,
+                  archived: action.archived,
+                  deletedAt: action.archived ? at : undefined,
+                  deletedBy: action.archived ? action.actor ?? "manager" : undefined,
+                  deletionReason: action.archived
+                    ? action.reason ?? "أرشفة توقف (حذف ناعم)"
+                    : undefined,
+                }
+              : s
           ),
         },
         {
-          action: "update",
+          action: action.archived ? "archive" : "restore",
           entity: "stoppage",
           entityId: action.id,
-          summary: `${action.archived ? "أرشفة" : "إعادة تفعيل"} توقف`,
+          summary: `${action.archived ? "أرشفة (حذف ناعم — السجل محفوظ)" : "إعادة تفعيل"} توقف ${
+            before ? `${before.startTime} → ${before.endTime}` : ""
+          }`,
+          before,
+          reason: action.reason,
+          actor: action.actor,
         }
       );
+    }
 
     case "SAVE_FUEL": {
       const exists = state.fuelRecords.some((f) => f.id === action.record.id);
@@ -1153,57 +1482,100 @@ function reducer(state: AppState, action: Action): AppState {
       });
     }
 
-    case "ARCHIVE_FUEL":
+    case "ARCHIVE_FUEL": {
+      const at = new Date().toISOString();
       return commit(
         state,
         {
           ...state,
           fuelRecords: state.fuelRecords.map((f) =>
-            f.id === action.id ? { ...f, archived: action.archived } : f
+            f.id === action.id
+              ? {
+                  ...f,
+                  archived: action.archived,
+                  deletedAt: action.archived ? at : undefined,
+                  deletedBy: action.archived ? "manager" : undefined,
+                  deletionReason: action.archived ? "أرشفة سجل ديزل (حذف ناعم)" : undefined,
+                }
+              : f
           ),
         },
         {
-          action: "update",
+          action: action.archived ? "archive" : "restore",
           entity: "fuel",
           entityId: action.id,
-          summary: `${action.archived ? "أرشفة" : "إعادة تفعيل"} سجل ديزل`,
+          summary: `${action.archived ? "أرشفة (حذف ناعم)" : "إعادة تفعيل"} سجل ديزل — التاريخ محفوظ`,
         }
       );
+    }
 
     case "SAVE_OPERATOR": {
       const exists = state.operatorRecords.some((o) => o.id === action.record.id);
+      const paid = state.payments
+        .filter(
+          (p) =>
+            p.linkedOperationType === "operator" &&
+            p.linkedOperationId === action.record.id &&
+            p.status !== "void"
+        )
+        .reduce((s, p) => s + p.amount, 0);
+      const record: OperatorRecord = {
+        ...action.record,
+        ratePerHourSnapshot: action.record.ratePerHourSnapshot || action.record.hourlyWage || 0,
+        attendantPersonId: action.record.attendantPersonId ?? null,
+        paidAmount: paid,
+        remainingAmount: Math.max(0, (action.record.dueAmount || 0) - paid),
+        status:
+          paid >= (action.record.dueAmount || 0) && (action.record.dueAmount || 0) > 0
+            ? "settled"
+            : paid > 0
+              ? "partial"
+              : action.record.status ?? "open",
+        updatedAt: new Date().toISOString(),
+      };
       const next = {
         ...state,
         operatorRecords: exists
-          ? state.operatorRecords.map((o) => (o.id === action.record.id ? action.record : o))
-          : [...state.operatorRecords, action.record],
+          ? state.operatorRecords.map((o) => (o.id === record.id ? record : o))
+          : [...state.operatorRecords, record],
       };
       return commit(state, next, {
         action: exists ? "update" : "create",
         entity: "operator",
-        entityId: action.record.id,
-        summary: `تسجيل رواسة ${action.record.operatorName}: أجر مستحق ${action.record.dueAmount}`,
-        after: action.record,
+        entityId: record.id,
+        summary: `تسجيل رواسة ${record.operatorName}: أجر مستحق ${record.dueAmount} (لقطة الأجر ${record.ratePerHourSnapshot}/ساعة)`,
+        after: record,
         op: exists ? "update" : "create",
       });
     }
 
-    case "ARCHIVE_OPERATOR":
+    case "ARCHIVE_OPERATOR": {
+      const at = new Date().toISOString();
       return commit(
         state,
         {
           ...state,
           operatorRecords: state.operatorRecords.map((o) =>
-            o.id === action.id ? { ...o, archived: action.archived } : o
+            o.id === action.id
+              ? {
+                  ...o,
+                  archived: action.archived,
+                  status: action.archived ? ("cancelled" as const) : ("open" as const),
+                  deletedAt: action.archived ? at : undefined,
+                  deletedBy: action.archived ? "manager" : undefined,
+                  deletionReason: action.archived ? "أرشفة سجل رواسة (حذف ناعم)" : undefined,
+                }
+              : o
           ),
         },
         {
-          action: "update",
+          action: action.archived ? "archive" : "restore",
           entity: "operator",
           entityId: action.id,
-          summary: `${action.archived ? "أرشفة" : "إعادة تفعيل"} سجل رواسة`,
+          summary: `${action.archived ? "أرشفة (حذف ناعم)" : "إعادة تفعيل"} سجل رواسة — التاريخ محفوظ`,
         }
       );
+    }
 
     /* ------------------------------- المالية --------------------------- */
     case "ADD_TRANSACTION": {
@@ -1283,10 +1655,20 @@ function reducer(state: AppState, action: Action): AppState {
     case "VOID_TRANSACTION": {
       const original = state.transactions.find((t) => t.id === action.id);
       if (!original) return state;
+      const at = new Date().toISOString();
       const next = {
         ...state,
         transactions: state.transactions.map((t) =>
-          t.id === action.id ? { ...t, status: "void" as const, notes: `${t.notes} | إلغاء: ${action.reason}` } : t
+          t.id === action.id
+            ? {
+                ...t,
+                status: "void" as const,
+                notes: `${t.notes}${t.notes ? " | " : ""}إلغاء: ${action.reason}`,
+                deletedAt: at,
+                deletedBy: action.actor,
+                deletionReason: action.reason,
+              }
+            : t
         ),
       };
       return commit(state, next, {
@@ -1328,14 +1710,24 @@ function reducer(state: AppState, action: Action): AppState {
         {
           ...state,
           personalRecords: state.personalRecords.map((p) =>
-            p.id === action.id ? { ...p, archived: action.archived } : p
+            p.id === action.id
+              ? {
+                  ...p,
+                  archived: action.archived,
+                  deletedAt: action.archived ? new Date().toISOString() : undefined,
+                  deletedBy: action.archived ? "user" : undefined,
+                  deletionReason: action.archived ? "أرشفة سجل شخصي (حذف ناعم)" : undefined,
+                }
+              : p
           ),
         },
         {
           action: action.archived ? "archive" : "restore",
           entity: "personal_record",
           entityId: action.id,
-          summary: action.archived ? "أرشفة سجل شخصي (حذف ناعم)" : "إعادة تفعيل سجل شخصي",
+          summary: action.archived
+            ? "أرشفة سجل شخصي (حذف ناعم — التاريخ محفوظ)"
+            : "إعادة تفعيل سجل شخصي",
           actor: "user",
           actorRole: "user",
         }
@@ -1383,6 +1775,412 @@ function reducer(state: AppState, action: Action): AppState {
         summary: `تجاوز تعارض (${action.ack.kind}) — السبب: ${action.ack.reason}`,
         after: action.ack,
         reason: action.ack.reason,
+      });
+    }
+
+    /* ------------------ الدفعات والديون (§12, §13) --------------------- */
+
+    case "ADD_DEBT": {
+      const person = findPerson(state, action.debt.debtorId);
+      const debt: Debt = {
+        ...action.debt,
+        paidAmount: action.debt.paidAmount || 0,
+        remainingAmount: Math.max(0, (action.debt.amount || 0) - (action.debt.paidAmount || 0)),
+        updatedAt: new Date().toISOString(),
+      };
+      const tx: Transaction = {
+        id: uid("tx"),
+        pumpId: debt.pumpId,
+        kind: action.txKind ?? "debt",
+        direction: "debit",
+        personId: debt.debtorId,
+        shareholderId: null,
+        dayId: null,
+        usageId: debt.linkedOperationType === "usage" ? debt.linkedOperationId : null,
+        operatorRecordId: null,
+        fuelRecordId: null,
+        debtId: debt.id,
+        paymentId: null,
+        transferEventId: null,
+        amount: debt.amount,
+        date: debt.date,
+        reason: debt.reason || "دين مستقل",
+        status: "posted",
+        correctsTxId: null,
+        notes: debt.notes,
+        source: "manager",
+        createdAt: new Date().toISOString(),
+        createdBy: action.actor,
+      };
+      const next = {
+        ...state,
+        debts: [...state.debts, { ...debt, status: debtStatusOf(debt) }],
+        transactions: [...state.transactions, tx],
+      };
+      return commit(state, next, {
+        action: "create",
+        entity: "debt",
+        entityId: debt.id,
+        summary: `تسجيل دين مستقل على ${person?.name ?? "—"} بمقدار ${debt.amount} — ${debt.reason}`,
+        after: debt,
+        actor: action.actor,
+        op: "create",
+        notify: [
+          {
+            kind: "debt",
+            level: "warn",
+            title: "دين جديد",
+            body: `${person?.name ?? "—"}: دين بمقدار ${debt.amount} (${debt.reason}) — حالة الدين مستقلة عن الاستخدام.`,
+            personId: debt.debtorId,
+            dayId: null,
+          },
+        ],
+      });
+    }
+
+    case "ADD_PAYMENT": {
+      const payment = action.payment;
+      const person = findPerson(state, payment.personId);
+      const tx: Transaction = {
+        id: uid("tx"),
+        pumpId: payment.pumpId,
+        kind: payment.type === "attendants" ? "operators" : "payment",
+        direction: "credit",
+        personId: payment.personId,
+        shareholderId: null,
+        dayId: null,
+        usageId: payment.linkedOperationType === "usage" ? payment.linkedOperationId : null,
+        operatorRecordId: payment.linkedOperationType === "operator" ? payment.linkedOperationId : null,
+        fuelRecordId: null,
+        debtId: payment.linkedOperationType === "debt" ? payment.linkedOperationId : null,
+        paymentId: payment.id,
+        transferEventId: null,
+        amount: payment.amount,
+        date: payment.date,
+        reason: payment.reason || `دفعة (${paymentMethodLabel(payment.method)})`,
+        status: "posted",
+        correctsTxId: null,
+        method: payment.method,
+        notes: payment.notes,
+        source: "manager",
+        createdAt: new Date().toISOString(),
+        createdBy: action.actor,
+      };
+
+      /* تحديث ملخص الدين المرتبط — الدفعة نفسها لا تُستبدل ولا تُحذف */
+      let debts = state.debts;
+      if (payment.linkedOperationType === "debt" && payment.linkedOperationId) {
+        debts = debts.map((d) => {
+          if (d.id !== payment.linkedOperationId) return d;
+          const paid = (d.paidAmount || 0) + payment.amount;
+          const updated: Debt = {
+            ...d,
+            paidAmount: paid,
+            remainingAmount: Math.max(0, (d.amount || 0) - paid),
+            updatedAt: new Date().toISOString(),
+          };
+          return { ...updated, status: debtStatusOf(updated) };
+        });
+      }
+
+      /* تحديث ملخص سجل الرواسة إن كانت الدفعة له */
+      let operatorRecords = state.operatorRecords;
+      if (payment.linkedOperationType === "operator" && payment.linkedOperationId) {
+        operatorRecords = operatorRecords.map((o) => {
+          if (o.id !== payment.linkedOperationId) return o;
+          const paid = (o.paidAmount || 0) + payment.amount;
+          return {
+            ...o,
+            paidAmount: paid,
+            remainingAmount: Math.max(0, (o.dueAmount || 0) - paid),
+            status:
+              paid >= (o.dueAmount || 0) && (o.dueAmount || 0) > 0
+                ? ("settled" as const)
+                : paid > 0
+                  ? ("partial" as const)
+                  : ("open" as const),
+            updatedAt: new Date().toISOString(),
+          };
+        });
+      }
+
+      const next = {
+        ...state,
+        payments: [...state.payments, { ...payment, transactionId: tx.id, status: "posted" as const }],
+        transactions: [...state.transactions, tx],
+        debts,
+        operatorRecords,
+      };
+      return commit(state, next, {
+        action: "create",
+        entity: "payment",
+        entityId: payment.id,
+        summary: `تسجيل دفعة ${payment.amount} من ${person?.name ?? "—"} (${paymentMethodLabel(
+          payment.method
+        )}) — ${payment.reason}`,
+        after: payment,
+        actor: action.actor,
+        op: "create",
+        notify: [
+          {
+            kind: "payment",
+            level: "info",
+            title: "دفعة مسجّلة",
+            body: `${person?.name ?? "—"} دفع ${payment.amount} — ${payment.reason}. كل دفعة سجل مستقل ولا تُستبدل سابقتها.`,
+            personId: payment.personId,
+            dayId: null,
+          },
+        ],
+      });
+    }
+
+    case "VOID_PAYMENT": {
+      const payment = state.payments.find((p) => p.id === action.id);
+      if (!payment) return state;
+      const at = new Date().toISOString();
+      /* إلغاء الدفعة لا يحذفها: تُعلَّم ملغاة وتُسجَّل حركة عكسية */
+      const reversal: Transaction | null =
+        payment.transactionId
+          ? {
+              id: uid("tx"),
+              pumpId: payment.pumpId,
+              kind: "correction",
+              direction: "debit",
+              personId: payment.personId,
+              shareholderId: null,
+              dayId: null,
+              usageId: null,
+              operatorRecordId: null,
+              fuelRecordId: null,
+              debtId: payment.linkedOperationType === "debt" ? payment.linkedOperationId : null,
+              paymentId: payment.id,
+              transferEventId: null,
+              amount: payment.amount,
+              date: todayISO(),
+              reason: `إلغاء دفعة سابقة بمقدار ${payment.amount}`,
+              status: "posted",
+              correctsTxId: action.id,
+              method: payment.method,
+              notes: action.reason,
+              source: "manager",
+              createdAt: at,
+              createdBy: action.actor,
+            }
+          : null;
+      let debts = state.debts;
+      if (payment.linkedOperationType === "debt" && payment.linkedOperationId) {
+        debts = debts.map((d) => {
+          if (d.id !== payment.linkedOperationId) return d;
+          const paid = Math.max(0, (d.paidAmount || 0) - payment.amount);
+          const updated: Debt = {
+            ...d,
+            paidAmount: paid,
+            remainingAmount: Math.max(0, (d.amount || 0) - paid),
+            updatedAt: at,
+          };
+          return {
+            ...updated,
+            status: updated.status === "cancelled" ? "cancelled" : debtStatusOf(updated),
+          };
+        });
+      }
+      const next = {
+        ...state,
+        payments: state.payments.map((p) =>
+          p.id === action.id
+            ? {
+                ...p,
+                status: "void" as const,
+                deletedAt: at,
+                deletedBy: action.actor,
+                deletionReason: action.reason,
+              }
+            : p
+        ),
+        transactions: [
+          ...state.transactions.map((t) =>
+            t.paymentId === action.id && t.status === "posted"
+              ? {
+                  ...t,
+                  status: "void" as const,
+                  deletedAt: at,
+                  deletedBy: action.actor,
+                  deletionReason: action.reason,
+                }
+              : t
+          ),
+          ...(reversal ? [reversal] : []),
+        ],
+        debts,
+      };
+      return commit(state, next, {
+        action: "cancel",
+        entity: "payment",
+        entityId: action.id,
+        summary: `إلغاء دفعة بمقدار ${payment.amount} — ${action.reason} (الدفعة تبقى في التاريخ)`,
+        before: payment,
+        after: { ...payment, status: "void" },
+        reason: action.reason,
+        actor: action.actor,
+      });
+    }
+
+    case "CANCEL_DEBT": {
+      const debt = state.debts.find((d) => d.id === action.id);
+      if (!debt) return state;
+      const at = new Date().toISOString();
+      const next = {
+        ...state,
+        debts: state.debts.map((d) =>
+          d.id === action.id
+            ? {
+                ...d,
+                status: "cancelled" as const,
+                updatedAt: at,
+                deletedAt: at,
+                deletedBy: action.actor,
+                deletionReason: action.reason,
+              }
+            : d
+        ),
+        transactions: state.transactions.map((t) =>
+          t.debtId === action.id && t.status === "posted"
+            ? {
+                ...t,
+                status: "void" as const,
+                deletedAt: at,
+                deletedBy: action.actor,
+                deletionReason: action.reason,
+              }
+            : t
+        ),
+      };
+      return commit(state, next, {
+        action: "cancel",
+        entity: "debt",
+        entityId: action.id,
+        summary: `إلغاء دين بمقدار ${debt.amount} على ${findPerson(state, debt.debtorId)?.name ?? "—"} — ${action.reason}`,
+        before: debt,
+        after: { ...debt, status: "cancelled" },
+        reason: action.reason,
+        actor: action.actor,
+      });
+    }
+
+    /* --------------- السلف والإعارة والتحويل (§14) -------------------- */
+
+    case "ADD_TRANSFER_EVENT": {
+      const event = action.event;
+      const from = findPerson(state, event.fromPersonId);
+      const to = findPerson(state, event.toPersonId);
+      const next = {
+        ...state,
+        transferEvents: [...state.transferEvents, event],
+        transactions: action.tx ? [...state.transactions, action.tx] : state.transactions,
+      };
+      return commit(state, next, {
+        action: "transfer",
+        entity: "transfer_event",
+        entityId: event.id,
+        summary: `${transferTypeLabel(event.type)}: من ${from?.name ?? "—"} إلى ${
+          to?.name ?? "—"
+        } بمقدار ${event.minutes} دقيقة بتاريخ ${event.date} — ${event.reason}`,
+        after: event,
+        actor: action.actor,
+        op: "create",
+        notify: [
+          {
+            kind: "turn_changed",
+            level: "info",
+            title: `عملية ${transferTypeLabel(event.type)}`,
+            body: `من ${from?.name ?? "—"} إلى ${to?.name ?? "—"} بمقدار ${event.minutes} دقيقة — سُجّلت كعملية مستقلة مع تاريخها.`,
+            personId: event.toPersonId,
+            dayId: null,
+          },
+        ],
+      });
+    }
+
+    case "CANCEL_TRANSFER_EVENT": {
+      const event = state.transferEvents.find((t) => t.id === action.id);
+      if (!event) return state;
+      const at = new Date().toISOString();
+      const next = {
+        ...state,
+        transferEvents: state.transferEvents.map((t) =>
+          t.id === action.id
+            ? {
+                ...t,
+                status: "cancelled" as const,
+                deletedAt: at,
+                deletedBy: action.actor,
+                deletionReason: action.reason,
+              }
+            : t
+        ),
+        transactions: state.transactions.map((t) =>
+          t.transferEventId === action.id && t.status === "posted"
+            ? {
+                ...t,
+                status: "void" as const,
+                deletedAt: at,
+                deletedBy: action.actor,
+                deletionReason: action.reason,
+              }
+            : t
+        ),
+      };
+      return commit(state, next, {
+        action: "cancel",
+        entity: "transfer_event",
+        entityId: action.id,
+        summary: `إلغاء عملية ${transferTypeLabel(event.type)} بمقدار ${event.minutes} دقيقة — ${action.reason}`,
+        before: event,
+        after: { ...event, status: "cancelled" },
+        reason: action.reason,
+        actor: action.actor,
+      });
+    }
+
+    /* ------------------ التعارضات المحفوظة (§18) ---------------------- */
+
+    case "SYNC_CONFLICTS": {
+      if (action.detected.length === 0) {
+        if (state.conflicts.length === 0) return state;
+      }
+      const merged = mergeConflicts(state.conflicts, action.detected, state.pump?.id ?? "");
+      if (JSON.stringify(merged) === JSON.stringify(state.conflicts)) return state;
+      return { ...state, conflicts: merged };
+    }
+
+    case "RESOLVE_CONFLICT": {
+      const conflict = state.conflicts.find((c) => c.id === action.id);
+      if (!conflict) return state;
+      const at = new Date().toISOString();
+      const next = {
+        ...state,
+        conflicts: state.conflicts.map((c) =>
+          c.id === action.id
+            ? {
+                ...c,
+                status: action.status,
+                resolution: action.resolution,
+                notes: action.notes,
+                resolvedAt: action.status === "resolved" || action.status === "ignored" ? at : "",
+                resolvedBy: action.actor,
+              }
+            : c
+        ),
+      };
+      return commit(state, next, {
+        action: "resolve",
+        entity: "conflict",
+        entityId: action.id,
+        summary: `تسوية تعارض (${conflictTypeLabel(conflict.type)}) — الحالة: ${action.status} — القرار: ${action.resolution}`,
+        before: conflict,
+        after: { ...conflict, status: action.status, resolution: action.resolution },
+        reason: action.notes,
+        actor: action.actor,
       });
     }
 
@@ -1490,11 +2288,19 @@ export interface AppActions {
     archived: boolean,
     opts?: { reason?: string; actor?: string; force?: boolean }
   ) => void;
-  saveEntry: (entry: DayEntry, isNew: boolean) => void;
-  saveEntries: (dayId: string, entries: DayEntry[]) => void;
+  saveEntry: (
+    entry: DayEntry,
+    isNew: boolean,
+    opts?: { correctionReason?: string; actor?: string }
+  ) => void;
+  saveEntries: (
+    dayId: string,
+    entries: DayEntry[],
+    opts?: { correctionReason?: string; actor?: string }
+  ) => void;
   moveEntry: (id: string, dir: -1 | 1) => void;
-  deriveEntries: (dayId: string) => void;
-  removeEntry: (id: string) => void;
+  deriveEntries: (dayId: string, opts?: { correctionReason?: string; actor?: string }) => void;
+  removeEntry: (id: string, opts?: { reason?: string; actor?: string }) => void;
   recordUsage: (input: {
     dayId: string;
     entryId: string | null;
@@ -1510,6 +2316,9 @@ export interface AppActions {
     royaltyPayMode: RoyaltyPayMode;
     settlementNote: string;
     overCapacityReason: string;
+    personalFuelPrice?: number;
+    confirmedOverlap?: boolean;
+    correctionReason?: string;
     actor: string;
   }) => void;
   setUsageSettlement: (
@@ -1524,8 +2333,12 @@ export interface AppActions {
     }
   ) => void;
   voidUsage: (id: string, reason: string, actor: string) => void;
-  saveStoppage: (s: Stoppage, isNew: boolean) => void;
-  archiveStoppage: (id: string, archived: boolean) => void;
+  saveStoppage: (
+    s: Stoppage,
+    isNew: boolean,
+    opts?: { correctionReason?: string; actor?: string }
+  ) => void;
+  archiveStoppage: (id: string, archived: boolean, opts?: { reason?: string; actor?: string }) => void;
   saveFuel: (r: FuelRecord, isNew: boolean) => void;
   archiveFuel: (id: string, archived: boolean) => void;
   saveOperator: (r: OperatorRecord, isNew: boolean) => void;
@@ -1542,6 +2355,24 @@ export interface AppActions {
     adjustmentTx: Transaction | null
   ) => void;
   ackConflict: (ack: ConflictAck) => void;
+  /** حفظ دفعة مستقلة (§12) */
+  addPayment: (payment: Payment, actor: string) => void;
+  voidPayment: (id: string, reason: string, actor: string) => void;
+  /** حفظ دين مستقل (§13) */
+  addDebt: (debt: Debt, actor: string, txKind?: Transaction["kind"]) => void;
+  cancelDebt: (id: string, reason: string, actor: string) => void;
+  /** عمليات السلف والإعارة والتحويل (§14) */
+  addTransferEvent: (event: TransferEvent, tx: Transaction | null, actor: string) => void;
+  cancelTransferEvent: (id: string, reason: string, actor: string) => void;
+  /** مزامنة التعارضات المكتشفة (لا تحلّها ولا تعدّل أي سجل) */
+  syncConflicts: (detected: DetectedConflict[]) => void;
+  resolveConflict: (
+    id: string,
+    status: ConflictStatus,
+    resolution: string,
+    notes: string,
+    actor: string
+  ) => void;
   readNotifications: (ids: string[] | null) => void;
   clearNotifications: () => void;
   setTheme: (theme: Theme) => void;
@@ -1562,8 +2393,8 @@ function loadInitial(): AppState {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
     if (raw) {
-      const parsed = JSON.parse(raw) as AppState;
-      if (parsed && parsed.version === 2) {
+      const parsed = JSON.parse(raw) as Partial<AppState> & { version?: number };
+      if (parsed && (parsed.version === 3 || parsed.version === 2)) {
         // الحقول الحديثة تُضاف، والأيام تُربط بديالاتها، ولا تُحذف أي بيانات قائمة
         return normalizeState(parsed);
       }
@@ -1602,6 +2433,22 @@ export function AppProvider({ children }: { children: ReactNode }) {
     root.classList.toggle("dark", state.settings.theme === "dark");
   }, [state.settings.theme]);
 
+  /**
+   * مزامنة التعارضات (§18): تُكتشف التعارضات وتُحفظ كسجلات مستقلة،
+   * ولا يُعدَّل أي سجل رسمي أو شخصي، ولا يُعاد فتح تعارض حُلّ سابقًا.
+   */
+  const conflictSignature = useRef("");
+  useEffect(() => {
+    if (!state.pump) return;
+    const detected = detectConflicts(state);
+    const signature = JSON.stringify(
+      detected.map((d) => [d.key, d.officialValue, d.personalValue, d.difference])
+    );
+    if (signature === conflictSignature.current) return;
+    conflictSignature.current = signature;
+    dispatch({ type: "SYNC_CONFLICTS", detected });
+  }, [state]);
+
   const actions = useMemo<AppActions>(
     () => ({
       savePump: (pump, isNew) => dispatch({ type: "SAVE_PUMP", pump, isNew }),
@@ -1628,17 +2475,21 @@ export function AppProvider({ children }: { children: ReactNode }) {
       lockRound: (id, actor) => dispatch({ type: "LOCK_ROUND", id, actor }),
       unlockRound: (id, reason, actor) => dispatch({ type: "UNLOCK_ROUND", id, reason, actor }),
       archiveRound: (id, archived, opts) => dispatch({ type: "ARCHIVE_ROUND", id, archived, ...opts }),
-      saveEntry: (entry, isNew) => dispatch({ type: "SAVE_ENTRY", entry, isNew }),
-      saveEntries: (dayId, entries) => dispatch({ type: "SAVE_ENTRIES", dayId, entries }),
+      saveEntry: (entry, isNew, opts) =>
+        dispatch({ type: "SAVE_ENTRY", entry, isNew, ...opts }),
+      saveEntries: (dayId, entries, opts) =>
+        dispatch({ type: "SAVE_ENTRIES", dayId, entries, ...opts }),
       moveEntry: (id, dir) => dispatch({ type: "MOVE_ENTRY", id, dir }),
-      deriveEntries: (dayId) => dispatch({ type: "DERIVE_ENTRIES", dayId }),
-      removeEntry: (id) => dispatch({ type: "REMOVE_ENTRY", id }),
+      deriveEntries: (dayId, opts) => dispatch({ type: "DERIVE_ENTRIES", dayId, ...opts }),
+      removeEntry: (id, opts) => dispatch({ type: "REMOVE_ENTRY", id, ...opts }),
       recordUsage: (input) => dispatch({ type: "RECORD_USAGE", ...input }),
       setUsageSettlement: (usageId, input) =>
         dispatch({ type: "SET_USAGE_SETTLEMENT", usageId, ...input }),
       voidUsage: (id, reason, actor) => dispatch({ type: "VOID_USAGE", id, reason, actor }),
-      saveStoppage: (stoppage, isNew) => dispatch({ type: "SAVE_STOPPAGE", stoppage, isNew }),
-      archiveStoppage: (id, archived) => dispatch({ type: "ARCHIVE_STOPPAGE", id, archived }),
+      saveStoppage: (stoppage, isNew, opts) =>
+        dispatch({ type: "SAVE_STOPPAGE", stoppage, isNew, ...opts }),
+      archiveStoppage: (id, archived, opts) =>
+        dispatch({ type: "ARCHIVE_STOPPAGE", id, archived, ...opts }),
       saveFuel: (record, isNew) => dispatch({ type: "SAVE_FUEL", record, isNew }),
       archiveFuel: (id, archived) => dispatch({ type: "ARCHIVE_FUEL", id, archived }),
       saveOperator: (record, isNew) => dispatch({ type: "SAVE_OPERATOR", record, isNew }),
@@ -1653,6 +2504,17 @@ export function AppProvider({ children }: { children: ReactNode }) {
       settle: (settlement, personalRecordId, officialUsageId, adjustmentTx) =>
         dispatch({ type: "SETTLE", settlement, personalRecordId, officialUsageId, adjustmentTx }),
       ackConflict: (ack) => dispatch({ type: "ACK_CONFLICT", ack }),
+      addPayment: (payment, actor) => dispatch({ type: "ADD_PAYMENT", payment, actor }),
+      voidPayment: (id, reason, actor) => dispatch({ type: "VOID_PAYMENT", id, reason, actor }),
+      addDebt: (debt, actor, txKind) => dispatch({ type: "ADD_DEBT", debt, actor, txKind }),
+      cancelDebt: (id, reason, actor) => dispatch({ type: "CANCEL_DEBT", id, reason, actor }),
+      addTransferEvent: (event, tx, actor) =>
+        dispatch({ type: "ADD_TRANSFER_EVENT", event, tx, actor }),
+      cancelTransferEvent: (id, reason, actor) =>
+        dispatch({ type: "CANCEL_TRANSFER_EVENT", id, reason, actor }),
+      syncConflicts: (detected) => dispatch({ type: "SYNC_CONFLICTS", detected }),
+      resolveConflict: (id, status, resolution, notes, actor) =>
+        dispatch({ type: "RESOLVE_CONFLICT", id, status, resolution, notes, actor }),
       readNotifications: (ids) => dispatch({ type: "READ_NOTIFICATIONS", ids }),
       clearNotifications: () => dispatch({ type: "CLEAR_NOTIFICATIONS" }),
       setTheme: (theme) => dispatch({ type: "SET_THEME", theme }),
@@ -1675,3 +2537,5 @@ export function useApp(): AppContextValue {
 }
 
 export { STORAGE_KEY, nowTime, todayISO, personBalance };
+/** يُستخدم في الاختبارات الآلية (§27) — نفس المخزن الذي تعمل به الشاشات */
+export const reducerForTests = reducer;

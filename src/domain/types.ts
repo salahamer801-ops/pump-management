@@ -7,6 +7,19 @@
 
 export type ID = string;
 
+/**
+ * الحذف الناعم الموحّد (§15): لا يُحذف سجل مهم نهائيًا أبدًا.
+ * كل كيان تاريخي يحمل: متى أُبطل، من أبطله، ولماذا.
+ */
+export interface SoftDeletable {
+  /** متى أُبطل السجل (ISO) */
+  deletedAt?: string;
+  /** من أبطله */
+  deletedBy?: string;
+  /** سبب الإبطال / الحذف المنطقي */
+  deletionReason?: string;
+}
+
 export type Currency = "YER" | "SAR" | "USD";
 export type EnergyType = "solar" | "diesel" | "hybrid";
 export type Theme = "light" | "dark";
@@ -50,7 +63,7 @@ export interface Pump {
 
 /* ------------------------------ الأشخاص ------------------------------- */
 
-export interface Person {
+export interface Person extends SoftDeletable {
   id: ID;
   name: string;
   phone: string;
@@ -71,7 +84,7 @@ export interface Person {
 export type ShareholderUseStatus = "continuing" | "rented" | "transferred" | "sold";
 
 /** المساهم الأساسي — سجل مرجعي داخل المضخة */
-export interface Shareholder {
+export interface Shareholder extends SoftDeletable {
   id: ID;
   pumpId: ID;
   personId: ID;
@@ -109,7 +122,7 @@ export type RightKind =
   | "return";
 
 /** الحق والتحويلات — تاريخ كامل لا يُستبدل */
-export interface ShareRight {
+export interface ShareRight extends SoftDeletable {
   id: ID;
   pumpId: ID;
   shareholderId: ID;
@@ -147,7 +160,7 @@ export type DayStatus =
  * الديالة — دورة/مرحلة دوران لها يوم بداية وعدد أيام،
  * وتاريخ النهاية يُحسب من عدد الأيام المُدخل.
  */
-export interface DialaRound {
+export interface DialaRound extends SoftDeletable {
   id: ID;
   pumpId: ID;
   /** رقم الديالة المتسلسل */
@@ -171,7 +184,7 @@ export interface DialaRound {
   archived: boolean;
 }
 
-export interface DialaDay {
+export interface DialaDay extends SoftDeletable {
   id: ID;
   pumpId: ID;
   dialaNumber: number;
@@ -183,6 +196,13 @@ export interface DialaDay {
   workStart: string;
   workEnd: string;
   capacityMin: number;
+  /**
+   * الجدول الأساسي (DialaSchedule) وقت إنشاء اليوم — لا يتغيّر أبدًا بتعديل اليوم الفعلي.
+   * تعديل workStart/workEnd يمسّ اليوم الفعلي فقط ولا يؤثر على هذه القيم.
+   */
+  plannedWorkStart: string;
+  plannedWorkEnd: string;
+  plannedCapacityMin: number;
   notes: string;
   openedBy: string;
   closedBy: string;
@@ -201,7 +221,7 @@ export type EntryRole = "shareholder" | "right_holder" | "tenant" | "guest" | "o
 export type EntryStatus = "planned" | "done" | "cancelled" | "postponed";
 
 /** ترتيب اليوم الفعلي — لا يغيّر الجدول الأساسي */
-export interface DayEntry {
+export interface DayEntry extends SoftDeletable {
   id: ID;
   dayId: ID;
   pumpId: ID;
@@ -235,7 +255,7 @@ export type DieselSettlement = "paid" | "shortage" | "unpaid";
 /** سداد رسوم الرواسة: نقد أو أجل */
 export type RoyaltyPayMode = "cash" | "credit";
 
-export interface ActualUsage {
+export interface ActualUsage extends SoftDeletable {
   id: ID;
   pumpId: ID;
   dayId: ID;
@@ -254,10 +274,20 @@ export interface ActualUsage {
   /* Snapshot للقيم وقت العملية */
   fuelPerHourSnapshot: number;
   fuelLiters: number;
+  /** السعر المرجعي للمضخة وقت العملية */
   fuelPriceSnapshot: number;
+  /** السعر الذي سجّله المستخدم لهذه العملية (0 = لم يُسجَّل) */
+  personalFuelPriceSnapshot: number;
+  /** تكلفة الديزل = اللترات × (السعر الشخصي إن وُجد، وإلا المرجعي) */
+  fuelCost: number;
+  /** المسؤول عن الديزل: = max(اللترات × السعر المستخدم) (يبقى للتوافق مع العمليات القديمة) */
   fuelAmountDue: number;
   royaltyHourlySnapshot: number;
   royaltyAmountDue: number;
+  /** دقائق توقف المضخة داخل فترة هذه العملية */
+  stoppageMin: number;
+  /** عملية السلف/الإعارة/التحويل المرتبطة إن وُجدت */
+  transferEventId?: ID | null;
   /* حالة التسديد — كل خيار له أثر مالي مختلف */
   dieselSettlement: DieselSettlement;
   /** نقص الديزل باللتر (عند اختيار «نقص») */
@@ -266,10 +296,15 @@ export interface ActualUsage {
   settlementNote: string;
   overCapacity: boolean;
   overCapacityReason: string;
+  /** مقدار التجاوز بالدقائق وقت تسجيل العملية */
+  overCapacityMin: number;
   notes: string;
+  /** من أنشأ الاستخدام: المسؤول أو المستخدم من سجله الشخصي */
+  source: "manager" | "user";
   status: "active" | "void";
   createdAt: string;
   createdBy: string;
+  updatedAt: string;
 }
 
 /* ------------------------- التوقفات والوقود والرواسة --------------------- */
@@ -282,7 +317,7 @@ export type StoppageKind =
   | "unplanned"
   | "temporary";
 
-export interface Stoppage {
+export interface Stoppage extends SoftDeletable {
   id: ID;
   pumpId: ID;
   dayId: ID | null;
@@ -298,7 +333,7 @@ export interface Stoppage {
   archived: boolean;
 }
 
-export interface FuelRecord {
+export interface FuelRecord extends SoftDeletable {
   id: ID;
   pumpId: ID;
   dayId: ID | null;
@@ -314,20 +349,29 @@ export interface FuelRecord {
   archived: boolean;
 }
 
-export interface OperatorRecord {
+export interface OperatorRecord extends SoftDeletable {
   id: ID;
   pumpId: ID;
   dayId: ID | null;
   date: string;
+  /** الرواس إن كان مسجَّلًا كشخص — لا يُربط بالاسم فقط */
+  attendantPersonId: ID | null;
   operatorName: string;
+  /** لتر/ساعة أو أجر/ساعة وقت التسجيل (Snapshot) — لا يتغيّر بتغيّر الإعدادات */
+  ratePerHourSnapshot: number;
   hourlyWage: number;
   startTime: string;
   endTime: string;
   minutes: number;
   dueAmount: number;
+  /** ملخص مشتق من الدفعات المرتبطة (لا يُستبدل التاريخ) */
+  paidAmount: number;
+  remainingAmount: number;
+  status: "open" | "partial" | "settled" | "cancelled";
   notes: string;
   createdAt: string;
   createdBy: string;
+  updatedAt?: string;
   archived: boolean;
 }
 
@@ -348,7 +392,7 @@ export type TxKind =
 /** credit = له / دفع ، debit = عليه / استحقاق */
 export type TxDirection = "debit" | "credit";
 
-export interface Transaction {
+export interface Transaction extends SoftDeletable {
   id: ID;
   pumpId: ID;
   kind: TxKind;
@@ -359,6 +403,14 @@ export interface Transaction {
   usageId: ID | null;
   operatorRecordId: ID | null;
   fuelRecordId: ID | null;
+  /** الدين المرتبط (إن كانت الحركة استحقاق دين أو سدادًا له) */
+  debtId?: ID | null;
+  /** الدفعة المرتبطة (إن كانت الحركة ناتجة عن دفعة مسجّلة) */
+  paymentId?: ID | null;
+  /** عملية السلف/الإعارة/التحويل المرتبطة */
+  transferEventId?: ID | null;
+  /** طريقة الدفع للدفعات */
+  method?: PaymentMethod;
   /** موجبة دائمًا — الاتجاه يحدد الإشارة */
   amount: number;
   date: string;
@@ -389,11 +441,17 @@ export type PersonalOpType =
   | "advance"
   | "other";
 
-export interface PersonalRecord {
+export interface PersonalRecord extends SoftDeletable {
   id: ID;
   personId: ID;
   pumpId: ID | null;
   dayId: ID | null;
+  /** الاستخدام الرسمي المقابل — الربط لا يعني التعديل */
+  officialUsageId?: ID | null;
+  officialMinutes?: number;
+  officialAmount?: number;
+  /** استهلاك المضخة وقت التسجيل (Snapshot) */
+  fuelConsumptionPerHourSnapshot?: number;
   date: string;
   startTime: string;
   endTime: string;
@@ -407,9 +465,13 @@ export interface PersonalRecord {
   operationType: PersonalOpType;
   notes: string;
   matchStatus: MatchStatus;
+  /** مصدر السجل: المستخدم من تطبيقه أو المسؤول */
+  source?: "manager" | "user";
   /** حذف ناعم — لا يُفقد التاريخ */
   archived?: boolean;
   createdAt: string;
+  createdBy?: string;
+  updatedAt?: string;
 }
 
 export interface Settlement {
@@ -451,6 +513,150 @@ export interface ConflictAck {
   at: string;
 }
 
+/* --------------------- الدفعات والديون (§12, §13) ---------------------- */
+
+export type PaymentMethod = "cash" | "transfer" | "credit_note" | "in_kind" | "other";
+export type PaymentType =
+  | "debt"
+  | "fuel"
+  | "royalty"
+  | "attendants"
+  | "rights"
+  | "loan"
+  | "other";
+
+/** ما الذي تسدّده الدفعة بالضبط */
+export type LinkedOperationType =
+  | "usage"
+  | "debt"
+  | "operator"
+  | "right"
+  | "transfer"
+  | "day"
+  | "manual";
+
+/**
+ * الدفعة سجل مستقل — لا تعديل لقيمة «مسدد» داخل سجل آخر (§12).
+ * يمكن للشخص أن يدفع عدة دفعات لنفس الدين، ولا تُستبدل أي دفعة سابقة.
+ */
+export interface Payment extends SoftDeletable {
+  id: ID;
+  pumpId: ID;
+  personId: ID;
+  amount: number;
+  date: string;
+  type: PaymentType;
+  method: PaymentMethod;
+  reason: string;
+  linkedOperationId: ID | null;
+  linkedOperationType: LinkedOperationType;
+  /** الحركة المالية الناتجة في دفتر الحركات */
+  transactionId: ID | null;
+  notes: string;
+  status: "posted" | "void";
+  createdAt: string;
+  createdBy: string;
+}
+
+export type DebtStatus = "unpaid" | "partially_paid" | "paid" | "cancelled";
+
+/** الدين مستقل عن الاستخدام — ولا يُحسب بمجرد وجود استخدام (§13) */
+export interface Debt extends SoftDeletable {
+  id: ID;
+  pumpId: ID;
+  debtorId: ID;
+  amount: number;
+  paidAmount: number;
+  remainingAmount: number;
+  reason: string;
+  linkedOperationId: ID | null;
+  linkedOperationType: LinkedOperationType;
+  date: string;
+  status: DebtStatus;
+  notes: string;
+  createdAt: string;
+  createdBy: string;
+  updatedAt?: string;
+}
+
+/** التعارض يُحفظ ولا يُحلّ تلقائيًا (§18) */
+export type ConflictStatus = "open" | "under_review" | "resolved" | "ignored";
+
+export interface Conflict {
+  id: ID;
+  pumpId: ID;
+  type: ConflictKind;
+  /** مفتاح ثابت يمنع تكرار نفس التعارض */
+  key: string;
+  dayId: ID | null;
+  personId: ID | null;
+  officialRecordId: ID | null;
+  personalRecordId: ID | null;
+  officialValue: string;
+  personalValue: string;
+  /** الفرق موصوفًا وبالرقم */
+  difference: string;
+  differenceValue: number;
+  unit: "minutes" | "amount" | "count";
+  status: ConflictStatus;
+  createdAt: string;
+  resolvedAt: string;
+  resolvedBy: string;
+  resolution: string;
+  notes: string;
+}
+
+/* ------------- السلف والإعارة والتحويل وتقديم الدور (§14) --------------- */
+
+export type TransferType =
+  | "loan"
+  | "borrow"
+  | "transfer"
+  | "advance"
+  | "postpone"
+  | "gift"
+  | "return";
+
+export interface TransferEvent extends SoftDeletable {
+  id: ID;
+  pumpId: ID;
+  type: TransferType;
+  /** السهم المعني إن وُجد */
+  shareId: ID | null;
+  fromPersonId: ID | null;
+  toPersonId: ID;
+  /** الساعات/الدقائق المنقولة */
+  minutes: number;
+  /** التاريخ الذي تسري منه العملية */
+  date: string;
+  /** قيمة مالية إن وُجدت */
+  amount: number;
+  reason: string;
+  status: "active" | "settled" | "cancelled";
+  notes: string;
+  transactionId: ID | null;
+  createdAt: string;
+  createdBy: string;
+}
+
+/* ------------------ التصحيحات بعد إغلاق اليوم (§21) --------------------- */
+
+export interface DayCorrection {
+  id: ID;
+  pumpId: ID;
+  dayId: ID;
+  date: string;
+  /** الكيان المعدَّل: entry / usage / stoppage / day */
+  entity: string;
+  entityId: string;
+  field: string;
+  oldValue: string;
+  newValue: string;
+  reason: string;
+  byUser: string;
+  at: string;
+}
+
 /* ---------------------- الإشعارات والتدقيق والمزامنة -------------------- */
 
 export interface AppNotification {
@@ -478,13 +684,19 @@ export interface AuditLog {
   id: ID;
   at: string;
   actor: string;
+  /** معرّف الفاعل إن كان مسجَّلًا كشخص */
+  actorId?: ID | null;
   actorRole: "manager" | "user" | "system";
   action: string;
+  /** نوع الكيان المسجَّل (نفس entity — للتسمية الصريحة) */
+  entityType?: string;
   entity: string;
   entityId: string;
   summary: string;
   before: string;
   after: string;
+  /** مصدر التغيير: من الشاشة، من المستخدم، أو من النظام */
+  source?: "screen" | "user_app" | "system" | "migration";
   reason: string;
   deviceId: string;
   synced: boolean;
@@ -587,7 +799,7 @@ export interface AppSettings {
 }
 
 export interface AppState {
-  version: 2;
+  version: 3;
   pump: Pump | null;
   persons: Person[];
   shareholders: Shareholder[];
@@ -603,6 +815,16 @@ export interface AppState {
   personalRecords: PersonalRecord[];
   settlements: Settlement[];
   conflictAcks: ConflictAck[];
+  /** الدفعات المستقلة (§12) */
+  payments: Payment[];
+  /** الديون المستقلة (§13) */
+  debts: Debt[];
+  /** التعارضات المحفوظة (§18) */
+  conflicts: Conflict[];
+  /** عمليات السلف والإعارة والتحويل وتقديم الدور (§14) */
+  transferEvents: TransferEvent[];
+  /** تصحيحات ما بعد إغلاق اليوم (§21) */
+  corrections: DayCorrection[];
   notifications: AppNotification[];
   auditLogs: AuditLog[];
   syncQueue: SyncItem[];
