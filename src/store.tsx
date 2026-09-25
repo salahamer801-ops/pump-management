@@ -5,6 +5,7 @@ import {
   useMemo,
   useReducer,
   useRef,
+  useState,
   type ReactNode,
 } from "react";
 import type {
@@ -66,6 +67,13 @@ import {
   type DetectedConflict,
 } from "./domain/rules";
 import { emptyState, migrateV1, normalizeState, seedDemo } from "./domain/migrate";
+import {
+  applyPayload,
+  pullOperating,
+  pushOperating,
+  resolveServerPumpId,
+} from "./domain/serverSync";
+import { getToken } from "./auth/api";
 import { LEGACY_MANAGER_STORAGE_KEY as LEGACY_KEY, MANAGER_STORAGE_KEY as STORAGE_KEY } from "./domain/storage";
 
 /* --------------------------------- الأفعال ------------------------------ */
@@ -2694,9 +2702,14 @@ export interface AppActions {
   importState: (state: AppState) => void;
 }
 
+/** حالة حفظ البيانات الرسمية على الخادم (المرحلة الثانية) */
+export type CloudSyncState = "local" | "connecting" | "synced" | "offline";
+
 interface AppContextValue {
   state: AppState;
   actions: AppActions;
+  /** حالة المزامنة مع الخادم: بيانات التشغيل الرسمية في PostgreSQL */
+  syncState: CloudSyncState;
 }
 
 const AppContext = createContext<AppContextValue | null>(null);
@@ -2764,6 +2777,136 @@ export function AppProvider({
     const root = document.documentElement;
     root.classList.toggle("dark", state.settings.theme === "dark");
   }, [state.settings.theme]);
+
+  /**
+   * ============================ المرحلة الثانية ============================
+   * بيانات التشغيل الرسمية على الخادم (PostgreSQL): PostgreSQL هو المصدر الرسمي،
+   * وlocalStorage نسخة محلية/ذاكرة مؤقتة — مع ترحيل آمن يحفظ نسخة احتياطية ولا يحذف شيئًا.
+   */
+  const serverPumpIdRef = useRef<string | null>(null);
+  const versionRef = useRef(0);
+  const migratedRef = useRef(false);
+  const firstRunRef = useRef(true);
+  const skipPushRef = useRef(false);
+  const pushTimer = useRef<number | null>(null);
+  const [syncState, setSyncState] = useState<"local" | "connecting" | "synced" | "offline">("local");
+
+  /* ربط حالة الجهاز بمضخة الخادم + ترحيل البيانات المحلية مرة واحدة */
+  useEffect(() => {
+    const token = getToken();
+    const code = state.pump?.pumpCode;
+    if (!token || !code) {
+      setSyncState("local");
+      return;
+    }
+    let alive = true;
+    setSyncState("connecting");
+    (async () => {
+      const pumpId = await resolveServerPumpId(code);
+      if (!alive) return;
+      if (!pumpId) {
+        setSyncState("local");
+        return;
+      }
+      serverPumpIdRef.current = pumpId;
+      const remote = await pullOperating(pumpId);
+      if (!alive) return;
+      if (!remote) {
+        setSyncState("offline");
+        return;
+      }
+      versionRef.current = remote.meta.version;
+      const localHasData = Boolean(state.pump) && (state.rounds.length > 0 || state.days.length > 0);
+      const serverHasData =
+        Boolean(remote.settings) ||
+        remote.dialas.length > 0 ||
+        remote.roster.length > 0 ||
+        remote.days.length > 0 ||
+        remote.people.length > 0 ||
+        remote.entries.length > 0;
+
+      const backup = (reason: string) => {
+        if (!localHasData) return;
+        try {
+          localStorage.setItem(
+            `pump-org-backup-${reason}::${storageKey}`,
+            JSON.stringify({ at: new Date().toISOString(), reason, state })
+          );
+        } catch {
+          /* لا نُفشل المزامنة إن امتلأ التخزين */
+        }
+      };
+
+      if (!serverHasData && localHasData) {
+        /* ترحيل آمن: نسخة احتياطية محلية أولًا، ثم الرفع، ثم علامة ترحيل — بلا حذف أي شيء */
+        backup("phase2");
+        const meta = await pushOperating(pumpId, state, {
+          migration: true,
+          version: remote.meta.version,
+        });
+        if (!alive) return;
+        if (meta?.migratedAt) {
+          try {
+            localStorage.setItem(`pump-org-migrated::${pumpId}`, meta.migratedAt);
+          } catch {
+            /* ignore */
+          }
+          versionRef.current = meta.version;
+          migratedRef.current = true;
+          setSyncState("synced");
+        } else {
+          setSyncState("offline");
+        }
+      } else if (serverHasData || remote.meta.migratedAt) {
+        /* الخادم رسمي: ننسخ الحالة الرسمية إلى هذا الجهاز (بنسخة احتياطية قبل الاستبدال) */
+        backup("preimport");
+        const merged = applyPayload(state, remote);
+        skipPushRef.current = true;
+        dispatch({ type: "IMPORT", state: { ...merged, version: 3 } });
+        migratedRef.current = true;
+        setSyncState("synced");
+      } else {
+        /* لا بيانات بعد على الخادم ولا محليًا: الاتصال جاهز وكل تعديل قادم سيُرفع */
+        migratedRef.current = true;
+        setSyncState("synced");
+      }
+      firstRunRef.current = false;
+    })().catch(() => {
+      if (alive) setSyncState("offline");
+      firstRunRef.current = false;
+    });
+    return () => {
+      alive = false;
+    };
+    // الربط يتم مرة واحدة عند فتح التطبيق أو تغيّر رقم تعريف المضخة
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [state.pump?.pumpCode, storageKey]);
+
+  /* رفع التعديلات إلى الخادم بعد كل تغيير رسمي (بتأخير قصير) */
+  useEffect(() => {
+    const pumpId = serverPumpIdRef.current;
+    if (!pumpId || !migratedRef.current) return;
+    if (skipPushRef.current) {
+      /* التغيير جاء من تنزيل البيانات الرسمية — لا حاجة لإعادة رفعها */
+      skipPushRef.current = false;
+      return;
+    }
+    if (pushTimer.current) window.clearTimeout(pushTimer.current);
+    setSyncState("connecting");
+    pushTimer.current = window.setTimeout(async () => {
+      const meta = await pushOperating(pumpId, state, { version: versionRef.current });
+      if (meta) {
+        versionRef.current = meta.version;
+        setSyncState("synced");
+      } else {
+        setSyncState("offline");
+      }
+    }, 2500);
+    return () => {
+      if (pushTimer.current) window.clearTimeout(pushTimer.current);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [state]);
 
   /**
    * مزامنة التعارضات (§18): تُكتشف التعارضات وتُحفظ كسجلات مستقلة،
@@ -2871,7 +3014,7 @@ export function AppProvider({
     []
   );
 
-  const value = useMemo(() => ({ state, actions }), [state, actions]);
+  const value = useMemo(() => ({ state, actions, syncState }), [state, actions, syncState]);
   return <AppContext.Provider value={value}>{children}</AppContext.Provider>;
 }
 

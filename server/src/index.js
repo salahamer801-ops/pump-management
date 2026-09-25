@@ -8,6 +8,7 @@ import { HttpError, wrap } from "./http.js";
 import { authRouter } from "./routes/auth.js";
 import { auditRouter, pumpsRouter } from "./routes/pumps.js";
 import { adminRouter } from "./routes/admin.js";
+import { operatingRouter } from "./routes/operating.js";
 import { getSettings } from "./settings.js";
 
 const app = express();
@@ -26,16 +27,19 @@ app.use((_req, res, next) => {
 
 app.get(["/health", "/api/health"], (_req, res) => res.json({ ok: true, service: "pump-api" }));
 
-app.use("/api/auth", authRouter);
-app.use("/api/pumps", pumpsRouter);
-app.use("/api/audit", auditRouter);
-app.use("/api/admin", adminRouter);
-
 /* إعدادات عامة لشاشة الدخول (الإعلان وفتح التسجيل) — بلا بيانات شخصية */
 app.get(
   "/api/settings/public",
   wrap(async (_req, res) => res.json(await getSettings()))
 );
+
+app.use("/api/auth", authRouter);
+app.use("/api/pumps", pumpsRouter);
+app.use("/api/audit", auditRouter);
+app.use("/api/admin", adminRouter);
+/* بيانات التشغيل الرسمية (المرحلة الثانية) — نفس الخادم ونفس قاعدة البيانات */
+app.use("/api", operatingRouter);
+
 
 app.get(
   "/api/health/db",

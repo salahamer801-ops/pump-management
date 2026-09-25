@@ -64,6 +64,26 @@ export interface LinkedPumpView extends PumpMeta {
 }
 
 export function buildLinkedPumpView(m: Membership, personId: string | null): LinkedPumpView {
+  const state = readManagerState(m.pumpId);
+  /**
+   * ربط الحساب بشخصه: الرمز المحلي إن وُجد، وإلا فالاسم المسجَّل في العضوية المعتمدة
+   * على الخادم — فيرى المستخدم نصيبه ودوره من أي جهاز.
+   */
+  const wanted = m.personName?.trim() ?? "";
+  const nameOfRow = (row: unknown) => {
+    const v = (row as { personName?: unknown }).personName;
+    return typeof v === "string" ? v.trim() : "";
+  };
+  const personByName =
+    state && wanted ? state.persons.find((p) => !p.archived && p.name.trim() === wanted) : undefined;
+  const rosterRow =
+    state && wanted
+      ? state.roster.find((r) => !r.archived && nameOfRow(r) === wanted) ?? null
+      : null;
+  const linked =
+    personId ??
+    personByName?.id ??
+    (rosterRow ? (rosterRow.personId || null) : null);
   return viewFromState(
     {
       pumpId: m.pumpId,
@@ -71,8 +91,8 @@ export function buildLinkedPumpView(m: Membership, personId: string | null): Lin
       pumpName: m.pumpName ?? m.personName ?? "مضخة",
       managerName: m.managerName ?? null,
     },
-    readManagerState(m.pumpId),
-    personId
+    state,
+    linked
   );
 }
 

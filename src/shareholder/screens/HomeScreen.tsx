@@ -1,4 +1,4 @@
-import { useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   BadgeCheck,
   CalendarClock,
@@ -29,6 +29,7 @@ import {
   nearestTurnAcross,
   type LinkedPumpView,
 } from "../pumpView";
+import { syncOfficialPumps } from "../officialSync";
 
 type Tab = "home" | "pumps" | "cycles" | "turns" | "official" | "accounts" | "settings";
 
@@ -43,6 +44,28 @@ export default function HomeScreen({ onGoTo }: Props) {
   const localPersonId = readUserLink();
 
   /**
+   * البيانات الرسمية تُقرأ من الخادم (PostgreSQL) لا من جهاز المسؤول،
+   * فيرى المستخدم ما سجّله المسؤول حتى من جهاز آخر.
+   */
+  const [officialTick, setOfficialTick] = useState(0);
+  const approvedKey = memberships
+    .filter((m) => m.status === "approved")
+    .map((m) => m.pumpId)
+    .sort()
+    .join(",");
+  useEffect(() => {
+    if (!approvedKey) return;
+    let alive = true;
+    void syncOfficialPumps(memberships).then(() => {
+      if (alive) setOfficialTick((n) => n + 1);
+    });
+    return () => {
+      alive = false;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [approvedKey]);
+
+  /**
    * بيانات المضخات المرتبطة — قراءة فقط من سجل المسؤول.
    * مضخات العضوية المعتمدة من الخادم + مضخات محفوظة على هذا الجهاز (وضع محلي).
    */
@@ -53,7 +76,9 @@ export default function HomeScreen({ onGoTo }: Props) {
       linked.map((v) => v.pumpId)
     );
     return [...linked, ...locals];
-  }, [memberships, localPersonId]);
+    // officialTick: يُعاد بناء العرض بعد وصول البيانات الرسمية من الخادم
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [memberships, localPersonId, officialTick]);
   const nearest = useMemo(() => nearestTurnAcross(views), [views]);
 
   const myRecords = state.turns

@@ -3,6 +3,9 @@ import {
   AlertTriangle,
   BarChart3,
   Bell,
+  Cloud,
+  CloudOff,
+  CloudUpload,
   CalendarCheck,
   Droplets,
   Fuel,
@@ -62,7 +65,7 @@ export default function ManagerApp({
   /** وضع تجريبي محلي: لا نداءات للخادم (طلبات الربط والأعضاء والسجل) */
   offline?: boolean;
 }) {
-  const { state, actions } = useApp();
+  const { state, actions, syncState } = useApp();
   const { user, logout } = useAuth();
   const userName = user?.name ?? "المسؤول";
   const [tab, setTab] = useState<ManagerTab>("home");
@@ -124,6 +127,26 @@ export default function ManagerApp({
           </div>
 
           <div className="flex items-center gap-1">
+            {/* حالة حفظ بيانات التشغيل الرسمية على الخادم (PostgreSQL) */}
+            {syncState === "synced" ? (
+              <span data-testid="cloud-synced">
+                <Pill tone="green" className="hidden sm:inline-flex">
+                  <Cloud size={12} /> محفوظ على الخادم
+                </Pill>
+              </span>
+            ) : syncState === "connecting" ? (
+              <span data-testid="cloud-saving">
+                <Pill tone="gray" className="hidden sm:inline-flex">
+                  <CloudUpload size={12} /> جارٍ الحفظ…
+                </Pill>
+              </span>
+            ) : syncState === "offline" ? (
+              <span data-testid="cloud-offline">
+                <Pill tone="amber" className="hidden sm:inline-flex">
+                  <CloudOff size={12} /> لا يوجد اتصال بالإنترنت
+                </Pill>
+              </span>
+            ) : null}
             {pendingSync > 0 ? (
               <Pill tone="amber" className="hidden sm:inline-flex">
                 <Fuel size={12} /> {pendingSync} غير متزامن

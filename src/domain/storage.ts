@@ -37,6 +37,9 @@ function parseManagerState(raw: string | null): AppState | null {
 export function readManagerState(pumpId?: string | null): AppState | null {
   try {
     if (pumpId) {
+      /* البيانات الرسمية من الخادم أولًا (إن وُجدت)، ثم نسخة الجهاز المحلية */
+      const official = parseManagerState(localStorage.getItem(officialStorageKey(pumpId)));
+      if (official) return official;
       const exact = parseManagerState(localStorage.getItem(managerStorageKey(pumpId)));
       if (exact) return exact;
     }
@@ -89,6 +92,33 @@ export function localManagerStates(): AppState[] {
     /* ignore */
   }
   return out;
+}
+
+/**
+ * ذاكرة البيانات الرسمية القادمة من الخادم (cache، وليست مصدرًا).
+ * المصدر الرسمي هو PostgreSQL — هذه مجرد نسخة تُعرض للمستخدم على جهازه
+ * (وتتيح للمساهم رؤية بيانات المضخة الرسمية من أي جهاز).
+ */
+const OFFICIAL_PREFIX = "pump-org-official::";
+
+export function officialStorageKey(pumpId: string): string {
+  return `${OFFICIAL_PREFIX}${pumpId}`;
+}
+
+export function saveOfficialState(pumpId: string, state: AppState): void {
+  try {
+    localStorage.setItem(officialStorageKey(pumpId), JSON.stringify({ ...state, official: true }));
+  } catch {
+    /* ignore */
+  }
+}
+
+export function readOfficialState(pumpId: string): AppState | null {
+  try {
+    return parseManagerState(localStorage.getItem(officialStorageKey(pumpId)));
+  } catch {
+    return null;
+  }
 }
 
 export function readUserLink(): string | null {
