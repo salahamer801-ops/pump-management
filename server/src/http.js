@@ -80,7 +80,7 @@ export async function requirePumpAccess(pumpId, user) {
 export function pumpPublic(pump) {
   return {
     id: pump.id,
-    code: pump.code,
+    pumpCode: pump.code,
     name: pump.name,
     description: pump.description,
     location: pump.location,

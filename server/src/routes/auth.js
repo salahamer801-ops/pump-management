@@ -56,7 +56,8 @@ export async function pumpsAndMemberships(userId) {
   return {
     managedPumps: owned.rows.map((p) => ({
       id: p.id,
-      code: p.code,
+      pumpCode: p.code,
+      managerId: p.manager_id,
       name: p.name,
       description: p.description,
       location: p.location,

@@ -65,7 +65,7 @@ export default function PumpGate({
                 </div>
                 <div className="min-w-0 flex-1">
                   <div className="truncate font-extrabold text-gray-900">{p.name}</div>
-                  <div className="mt-1 font-mono text-xs font-bold text-emerald-700">{p.code}</div>
+                  <div className="mt-1 font-mono text-xs font-bold text-emerald-700">{p.pumpCode}</div>
                   <div className="mt-1 flex flex-wrap gap-1">
                     <Pill tone="gray">{p.membersCount} عضو</Pill>
                     {p.pendingCount > 0 ? <Pill tone="amber">{p.pendingCount} طلب بانتظارك</Pill> : null}
@@ -76,7 +76,7 @@ export default function PumpGate({
                     <Check size={12} /> الحالية
                   </Pill>
                 ) : (
-                  <Button onClick={() => onSelect(p.id)} className="px-3 py-2 text-xs" data-testid={`select-pump-${p.code}`}>
+                  <Button onClick={() => onSelect(p.id)} className="px-3 py-2 text-xs" data-testid={`select-pump-${p.pumpCode}`}>
                     اختيار
                   </Button>
                 )}

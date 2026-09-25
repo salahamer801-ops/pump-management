@@ -22,10 +22,13 @@ export interface AccountUser {
 
 export interface ManagedPump {
   id: string;
-  code: string;
+  /** رقم تعريف المضخة الثابت (PMP-XXXXXX) */
+  pumpCode: string;
   name: string;
   description: string;
   location: string;
+  /** معرّف حساب المسؤول المالك للمضخة */
+  managerId: string;
   status: string;
   createdAt: string;
   membersCount: number;

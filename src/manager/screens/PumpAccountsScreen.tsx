@@ -98,7 +98,7 @@ export default function PumpAccountsScreen({
 
   const copyCode = async () => {
     try {
-      await navigator.clipboard.writeText(pump.code);
+      await navigator.clipboard.writeText(pump.pumpCode);
       setCopied(true);
       setTimeout(() => setCopied(false), 2000);
     } catch {
@@ -195,7 +195,7 @@ export default function PumpAccountsScreen({
               className="font-mono text-lg font-black tracking-wider text-emerald-800 dark:text-emerald-200"
               data-testid="pump-code"
             >
-              {pump.code}
+              {pump.pumpCode}
             </span>
             <Button variant="ghost" className="px-2 py-1.5 text-[11px]" onClick={() => void copyCode()} aria-label="نسخ رقم تعريف المضخة">
               {copied ? <Check size={14} /> : <Copy size={14} />} {copied ? "تم النسخ" : "نسخ"}

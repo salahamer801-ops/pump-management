@@ -32,6 +32,10 @@ export type RoyaltyMode = "cycle" | "hour";
 
 export interface Pump {
   id: ID;
+  /** رقم تعريف المضخة الثابت على الخادم (PMP-XXXXXX) — يُملأ إن كانت المضخة مسجَّلة هناك */
+  pumpCode?: string;
+  /** معرّف حساب المسؤول المالك للمضخة على الخادم */
+  managerId?: string;
   name: string;
   wells: string;
   farm: string;

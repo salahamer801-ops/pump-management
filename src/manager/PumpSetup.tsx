@@ -45,6 +45,8 @@ export default function PumpSetup({
     if (!form.name.trim()) return;
     const pump: Pump = {
       id: uid("pump"),
+      pumpCode: serverPump?.pumpCode ?? "",
+      managerId: serverPump?.managerId ?? "",
       name: form.name.trim(),
       wells: form.wells,
       farm: form.farm,
@@ -89,7 +91,7 @@ export default function PumpSetup({
           <p className="mx-auto mt-3 inline-flex items-center gap-2 rounded-2xl bg-emerald-50 px-4 py-2 text-xs font-bold text-emerald-800 dark:bg-emerald-900/30 dark:text-emerald-300">
             <ShieldCheck size={14} /> رقم تعريف المضخة:{" "}
             <span className="font-mono" data-testid="pump-code">
-              {serverPump.code}
+              {serverPump.pumpCode}
             </span>
           </p>
         ) : null}
