@@ -55,9 +55,12 @@ const NAV: { id: ManagerTab; label: string; icon: React.ReactNode }[] = [
 export default function ManagerApp({
   pump: managedPump,
   onSwitchPump,
+  offline = false,
 }: {
   pump: ManagedPump;
   onSwitchPump: () => void;
+  /** وضع تجريبي محلي: لا نداءات للخادم (طلبات الربط والأعضاء والسجل) */
+  offline?: boolean;
 }) {
   const { state, actions } = useApp();
   const { user, logout } = useAuth();
@@ -69,16 +72,20 @@ export default function ManagerApp({
 
   const refreshPending = useMemo(
     () => () => {
+      if (offline) return;
       listRequests(managedPump.id)
         .then((rows) => setPendingCount(rows.length))
         .catch(() => undefined);
     },
-    [managedPump.id]
+    [managedPump.id, offline]
   );
 
   useEffect(() => {
     refreshPending();
   }, [refreshPending]);
+
+  /** في الوضع التجريبي المحلي تُخفى شاشة «الحسابات» لأنها تعمل على الخادم */
+  const navItems = useMemo(() => (offline ? NAV.filter((n) => n.id !== "accounts") : NAV), [offline]);
 
   const unread = useMemo(() => unreadNotifications(state).length, [state]);
   const pendingSync = useMemo(
@@ -161,8 +168,13 @@ export default function ManagerApp({
       </main>
 
       <nav className="fixed inset-x-0 bottom-0 z-30 border-t border-gray-100 bg-white/95 backdrop-blur dark:border-slate-700 dark:bg-slate-900/95">
-        <div className="mx-auto grid max-w-2xl grid-cols-8">
-          {NAV.map((item) => (
+        <div
+          className={cx(
+            "mx-auto grid max-w-2xl",
+            navItems.length === NAV.length ? "grid-cols-8" : "grid-cols-7"
+          )}
+        >
+          {navItems.map((item) => (
             <button
               key={item.id}
               onClick={() => setTab(item.id)}

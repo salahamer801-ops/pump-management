@@ -19,7 +19,7 @@ type Tab = "login" | "register" | "forgot";
 const errorText = (err: unknown) =>
   err instanceof ApiError ? err.message : "تعذّر تنفيذ العملية — حاول مرة أخرى.";
 
-export default function LoginScreen() {
+export default function LoginScreen({ onOpenLocalDemo }: { onOpenLocalDemo?: () => void }) {
   const [tab, setTab] = useState<Tab>("login");
   const [notice, setNotice] = useState("");
 
@@ -80,6 +80,23 @@ export default function LoginScreen() {
             setTab("login");
           }}
         />
+      ) : null}
+
+      {onOpenLocalDemo ? (
+        <div className="mt-6 rounded-2xl border border-dashed border-amber-300 bg-amber-50/60 px-4 py-3 text-center">
+          <p className="text-[11px] leading-relaxed text-amber-900">
+            للتجربة بلا خادم: حساب محلي يُحفظ في هذا المتصفح فقط. الدخول الحقيقي أعلاه يبقى كما هو.
+          </p>
+          <button
+            type="button"
+            onClick={onOpenLocalDemo}
+            aria-label="فتح الدخول التجريبي المحلي"
+            data-testid="open-local-demo"
+            className="mt-2 w-full rounded-xl bg-white px-3 py-2 text-[12px] font-extrabold text-amber-900 ring-1 ring-amber-300 transition hover:bg-amber-100"
+          >
+            دخول تجريبي محلي (بدون خادم)
+          </button>
+        </div>
       ) : null}
 
       <div className="mt-auto pt-8 text-center text-xs text-gray-400">
