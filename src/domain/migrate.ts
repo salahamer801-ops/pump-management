@@ -23,6 +23,7 @@ import type {
 } from "./types";
 import { addDaysISO, durationMin, isoToShort, minutesToTime, timeToMinutes, todayISO, uid } from "./util";
 import { computeUsageDraft, isoRangeDays } from "./rules";
+import { generatePumpCode } from "../lib/auth";
 
 export function emptyState(): AppState {
   return {
@@ -224,6 +225,8 @@ export function normalizeState(
 export function pumpFromV1(p: PumpV1): Pump {
   return {
     id: uid("pump"),
+    /* رقم تعريف محلي للمضخة المرحَّلة — لا يمنح أي صلاحية، ويُستبدل برقم الخادم عند تسجيلها هناك */
+    pumpCode: generatePumpCode(),
     name: p.name || "المضخة",
     wells: p.wells || "",
     farm: p.farm || "",

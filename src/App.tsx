@@ -9,7 +9,7 @@ import ShareholderApp from "./shareholder/ShareholderApp";
 import { AppProvider } from "./store";
 import { managerStorageKey } from "./domain/storage";
 import type { ManagedPump } from "./auth/types";
-import { generatePumpCode, getSession, logoutUser } from "./lib/auth";
+import { generateId, generatePumpCode, getSession, logoutUser } from "./lib/auth";
 import type { AuthSession } from "./types";
 import { clearLegacySession } from "./session";
 
@@ -144,26 +144,32 @@ function TopBar({
 }
 
 const DEMO_PUMP_CODE_KEY = "pump_demo_code_v1";
+const DEMO_PUMP_ID_KEY = "pump_demo_id_v1";
 
-/** مضخة محلية للحساب المحلي — رقم تعريف ثابت في هذا المتصفح */
-function localPump(managerId: string, name: string): ManagedPump {
-  let pumpCode = "";
+/** قيمة تُولَّد مرة واحدة وتُثبَّت في هذا المتصفح (معرّف المضخة المحلية ورقم تعريفها) */
+function storedOnce(key: string, make: () => string): string {
+  let value = "";
   try {
-    pumpCode = localStorage.getItem(DEMO_PUMP_CODE_KEY) ?? "";
+    value = localStorage.getItem(key) ?? "";
   } catch {
     /* ignore */
   }
-  if (!pumpCode) {
-    pumpCode = generatePumpCode();
+  if (!value) {
+    value = make();
     try {
-      localStorage.setItem(DEMO_PUMP_CODE_KEY, pumpCode);
+      localStorage.setItem(key, value);
     } catch {
       /* ignore */
     }
   }
+  return value;
+}
+
+/** مضخة محلية للحساب المحلي — رقم تعريف ثابت في هذا المتصفح */
+function localPump(managerId: string, name: string): ManagedPump {
   return {
-    id: "local-demo-pump",
-    pumpCode,
+    id: storedOnce(DEMO_PUMP_ID_KEY, generateId),
+    pumpCode: storedOnce(DEMO_PUMP_CODE_KEY, generatePumpCode),
     name,
     description: "مضخة محلية — لا تُرسل بياناتها إلى أي خادم.",
     location: "",
