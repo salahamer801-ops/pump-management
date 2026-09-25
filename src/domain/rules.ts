@@ -5,17 +5,18 @@
 import type {
   ActualUsage,
   AppState,
+  BaseRosterMember,
   Conflict,
   ConflictKind,
   ConflictStatus,
   DayEntry,
   DayIssueSeverity,
-  DayRosterMember,
   Debt,
   DebtStatus,
   DialaDay,
   DialaRound,
   DieselSettlement,
+  EntryRole,
   Payment,
   PaymentMethod,
   PaymentType,
@@ -396,70 +397,123 @@ export function planEntriesFromSchedule(
   });
 }
 
-/* ------------------- أساسيو كل يوم (قوائم مستقلة لكل يوم) ----------------- */
+/* ------------- كشف الدوام الأساسي (كشف واحد لكل ديالة، يُثبَّت) ------------- */
 
-export interface RosterRow {
-  member: DayRosterMember;
+export interface BaseRosterRow {
+  member: BaseRosterMember;
   personId: string;
   person: Person | null;
   name: string;
   phone: string;
-  /** حصته في هذا اليوم بالدقائق */
+  /** نصيبه في الدور بالدقائق */
   shareMin: number;
   order: number;
+  role: EntryRole;
   /** مساهم في المضخة (يُعرض كمرجع فقط — لا يشترط أن يكون) */
   isShareholder: boolean;
+  /** وقت بدايته/نهايته المتوقّعة بالتسلسل من بداية التشغيل */
+  startTime: string;
+  endTime: string;
 }
 
 /**
- * قائمة أساسيي يوم واحد فقط — المستقلة عن كل يوم آخر.
- * القاعدة: لا تُقرأ أي قائمة إلا بمعرّف يومها (`dayId`)، والحذف الناعم يُخفيها من يومها وحده.
+ * أسطر كشف الدوام الأساسي لديالة واحدة — مرتّبة.
+ * القاعدة: الكشف واحد للديالة كلها (كل أيامها)، وترتيبه ونصيبه يُثبَّتان ويُورَّثان.
  */
-export function rosterRows(state: AppState, dayId: string): RosterRow[] {
-  return (state.roster ?? [])
-    .filter((r) => r.dayId === dayId && !r.archived)
+export function baseRosterRows(state: AppState, roundId: string | null): BaseRosterRow[] {
+  if (!roundId) return [];
+  const rows = (state.roster ?? [])
+    .filter((r) => r.roundId === roundId && !r.archived)
     .slice()
-    .sort((a, b) => a.order - b.order || (a.createdAt < b.createdAt ? -1 : 1))
-    .map((member) => {
-      const person = findPerson(state, member.personId);
-      return {
-        member,
-        personId: member.personId,
-        person,
-        name: person?.name ?? "—",
-        phone: person?.phone ?? "",
-        shareMin: member.shareMin ?? 0,
-        order: member.order ?? 0,
-        isShareholder: !!person && isShareholder(state, member.pumpId, member.personId),
-      };
-    });
+    .sort((a, b) => a.order - b.order || (a.createdAt < b.createdAt ? -1 : 1));
+  return rows.map((member) => {
+    const person = findPerson(state, member.personId);
+    return {
+      member,
+      personId: member.personId,
+      person,
+      name: person?.name ?? "—",
+      phone: person?.phone ?? "",
+      shareMin: member.shareMin ?? 0,
+      order: member.order ?? 0,
+      role: member.role ?? "shareholder",
+      isShareholder: !!person && isShareholder(state, member.pumpId, member.personId),
+      startTime: "",
+      endTime: "",
+    };
+  });
 }
 
-/** مجموع حصص أساسيي اليوم بالدقائق */
-export function rosterTotalMin(state: AppState, dayId: string): number {
-  return rosterRows(state, dayId).reduce((sum, r) => sum + (r.shareMin || 0), 0);
+/** ساعات تشغيل الدوام الأساسي للمضخة (نافذة التشغيل) */
+export function baseRosterCapacityMin(pump: Pump): number {
+  return pumpWindow(pump).capacityMin;
 }
 
-/** هل هذا الشخص من أساسيي هذا اليوم؟ */
-export function isRosterMember(state: AppState, dayId: string, personId: string): boolean {
-  return (state.roster ?? []).some(
-    (r) => r.dayId === dayId && r.personId === personId && !r.archived
-  );
+/** مجموع نصبب كشف الديالة بالدقائق */
+export function baseRosterTotalMin(state: AppState, roundId: string | null): number {
+  return baseRosterRows(state, roundId).reduce((sum, r) => sum + (r.shareMin || 0), 0);
+}
+
+/** المتبقي من ساعات التشغيل بعد الكشف (لا يقل عن صفر) */
+export function baseRosterRemainingMin(state: AppState, pump: Pump, roundId: string | null): number {
+  return Math.max(0, baseRosterCapacityMin(pump) - baseRosterTotalMin(state, roundId));
+}
+
+/** هل تتّسع ساعات التشغيل لنصيب إضافي؟ (بوابة المنع التام) */
+export function baseRosterFits(
+  state: AppState,
+  pump: Pump,
+  roundId: string | null,
+  extraMin: number,
+  ignoreId?: string
+): boolean {
+  const used = baseRosterRows(state, roundId)
+    .filter((r) => r.member.id !== ignoreId)
+    .reduce((sum, r) => sum + (r.shareMin || 0), 0);
+  return used + Math.max(0, extraMin) <= baseRosterCapacityMin(pump);
 }
 
 /**
- * بناء صفوف اليوم من **أساسيي هذا اليوم** بالتسلسل من بداية تشغيل اليوم،
- * بمدة كل شخص كما حُدِّدت. قائمة فارغة ⇒ لا صفوف تُبنى.
- * لا يقرأ هذا التابع أي جدول عام في المضخة.
+ * نصيب مقترح تلقائيًا من سهم الشخص في المضخة:
+ * سهمه ÷ مجموع الأسهم × ساعات التشغيل (أو ساعاته الأساسية المسجّلة إن وُجدت).
+ * ومن لا سهم له → صفر ليُملأ يدويًا.
  */
-export function planEntriesFromRoster(
+export function suggestShareMin(state: AppState, pump: Pump, personId: string): number {
+  const rows = scheduleRows(state, pump);
+  const own = rows.find((r) => r.person?.id === personId || r.holderId === personId);
+  if (own) return own.derivedHoursMin || own.baseHoursMin || 0;
+  const linked = rows.find((r) => r.shareholder?.personId === personId);
+  if (linked) return linked.derivedHoursMin || linked.baseHoursMin || 0;
+  return 0;
+}
+
+/** وقت كل سطر متوقَّعًا بالتسلسل من بداية التشغيل — للعرض فقط */
+export function baseRosterTimeline(
+  state: AppState,
+  pump: Pump,
+  roundId: string | null
+): BaseRosterRow[] {
+  const base = timeToMinutes(pump.workStart);
+  let cursor = 0;
+  return baseRosterRows(state, roundId).map((row) => {
+    const start = base + cursor;
+    cursor += row.shareMin || 0;
+    return { ...row, startTime: minutesToTime(start), endTime: minutesToTime(start + (row.shareMin || 0)) };
+  });
+}
+
+/**
+ * بناء صفوف **الدوام الفعلي** لليوم من كشف ديالته: بالتسلسل من بداية تشغيل اليوم
+ * وبمدة نصيب كل شخص. كشف فارغ ⇒ لا صفوف تُبنى.
+ */
+export function planEntriesFromBaseRoster(
   state: AppState,
   pump: Pump,
   day: DialaDay
 ): Omit<DayEntry, "dayId">[] {
   const base = timeToMinutes(day.workStart);
   let cursor = 0;
-  return rosterRows(state, day.id).map((row, index) => {
+  return baseRosterRows(state, day.roundId ?? null).map((row, index) => {
     const share = row.shareMin > 0 ? row.shareMin : 0;
     const shareholder = shareholderOfPerson(state, pump.id, row.personId);
     const right = shareholder ? currentRight(state, shareholder.id) : null;
@@ -476,7 +530,7 @@ export function planEntriesFromRoster(
           : "right_holder"
         : shareholder
           ? "shareholder"
-          : "guest",
+          : row.role ?? "guest",
       shareholderId: shareholder?.id ?? null,
       rightId: right?.id ?? null,
       startTime: minutesToTime(start),
@@ -495,7 +549,19 @@ export function planEntriesFromRoster(
   });
 }
 
-/** ملخص يوم واحد داخل الديالة: عدد أساسييه ومجموع ساعاتهم وأسماؤهم */
+/** هل هذا الشخص في كشف ديالة هذا اليوم؟ */
+export function isBaseRosterPerson(
+  state: AppState,
+  roundId: string | null,
+  personId: string
+): boolean {
+  if (!roundId) return false;
+  return (state.roster ?? []).some(
+    (r) => r.roundId === roundId && r.personId === personId && !r.archived
+  );
+}
+
+/** ملخص يوم داخل الديالة: عدد أساسيي الكشف ومجموع نصيبهم (الكشف واحد لكل الأيام) */
 export interface RosterDaySummary {
   day: DialaDay;
   dayNumber: number;
@@ -504,59 +570,59 @@ export interface RosterDaySummary {
   names: string[];
 }
 
-/** ملخص كل يوم في الديالة (عرض فقط) */
 export function rosterDaySummaries(state: AppState, roundId: string): RosterDaySummary[] {
+  const rows = baseRosterRows(state, roundId);
+  const totalMin = rows.reduce((sum, r) => sum + (r.shareMin || 0), 0);
   return roundDays(state, roundId, true)
     .slice()
     .sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0))
-    .map((day) => {
-      const rows = rosterRows(state, day.id);
-      return {
-        day,
-        dayNumber: dayNumberInRound(state, day),
-        membersCount: rows.length,
-        totalMin: rows.reduce((sum, r) => sum + (r.shareMin || 0), 0),
-        names: rows.map((r) => r.name),
-      };
-    });
+    .map((day) => ({
+      day,
+      dayNumber: dayNumberInRound(state, day),
+      membersCount: rows.length,
+      totalMin,
+      names: rows.map((r) => r.name),
+    }));
 }
 
-/** ملخص تداول الدورة: في أي أيام يظهر كل شخص ومجموع حصصه مقابل سهمه الأساسي */
+/**
+ * تداول الديالة: لكل شخص في الكشف نصيبه، وأي أيام ظهر فيها في **الدوام الفعلي**،
+ * ومجموع ما سُجّل له فعليًا مقابل نصيبه — عرض ومقارنة فقط، بلا منع.
+ */
 export interface RosterPersonSummary {
   personId: string;
   name: string;
+  baseMin: number;
   dayNumbers: number[];
-  totalMin: number;
-  /** السهم الأساسي في المضخة (مرجعي — عرض وتحذير بلا منع) */
-  baseHoursMin: number;
+  actualTotalMin: number;
   diffMin: number;
 }
 
 export function rosterPersonSummaries(state: AppState, round: DialaRound): RosterPersonSummary[] {
-  const pumpId = round.pumpId;
-  const byPerson = new Map<string, RosterPersonSummary>();
-  for (const summary of rosterDaySummaries(state, round.id)) {
-    for (const row of rosterRows(state, summary.day.id)) {
-      const current = byPerson.get(row.personId) ?? {
+  const rows = baseRosterRows(state, round.id);
+  const days = roundDays(state, round.id, true);
+  return rows
+    .map((row) => {
+      const dayNumbers: number[] = [];
+      let actualTotalMin = 0;
+      for (const day of days) {
+        const own = state.entries.filter(
+          (e) => e.dayId === day.id && e.personId === row.personId && !e.archived
+        );
+        if (own.length === 0) continue;
+        dayNumbers.push(dayNumberInRound(state, day));
+        actualTotalMin += own.reduce((s, e) => s + entryMinutes(e), 0);
+      }
+      return {
         personId: row.personId,
         name: row.name,
-        dayNumbers: [],
-        totalMin: 0,
-        baseHoursMin: shareholderOfPerson(state, pumpId, row.personId)?.baseHoursMin ?? 0,
-        diffMin: 0,
+        baseMin: row.shareMin,
+        dayNumbers: dayNumbers.slice().sort((a, b) => a - b),
+        actualTotalMin,
+        diffMin: actualTotalMin - row.shareMin,
       };
-      if (!current.dayNumbers.includes(summary.dayNumber)) current.dayNumbers.push(summary.dayNumber);
-      current.totalMin += row.shareMin || 0;
-      byPerson.set(row.personId, current);
-    }
-  }
-  return [...byPerson.values()]
-    .map((p) => ({
-      ...p,
-      dayNumbers: p.dayNumbers.slice().sort((a, b) => a - b),
-      diffMin: p.totalMin - p.baseHoursMin,
-    }))
-    .sort((a, b) => b.totalMin - a.totalMin);
+    })
+    .sort((a, b) => b.baseMin - a.baseMin);
 }
 
 /* -------------------------- الاقتراحات والبحث (§11) -------------------- */

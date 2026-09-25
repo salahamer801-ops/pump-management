@@ -18,9 +18,10 @@ import type {
   Debt,
   DialaDay,
   DialaRound,
+  BaseRosterMember,
   DayEntry,
-  DayRosterMember,
   DieselSettlement,
+  EntryRole,
   FuelRecord,
   MatchStatus,
   OperatorRecord,
@@ -52,8 +53,10 @@ import {
   paymentMethodLabel,
   personBalance,
   personName,
-  planEntriesFromRoster,
-  rosterRows,
+  planEntriesFromBaseRoster,
+  baseRosterRows,
+  baseRosterCapacityMin,
+  baseRosterFits,
   roundOfDay,
   royaltyModeLabel,
   settlementPostings,
@@ -96,27 +99,36 @@ export type Action =
   | { type: "SAVE_ENTRIES"; dayId: string; entries: DayEntry[]; correctionReason?: string; actor?: string }
   | { type: "MOVE_ENTRY"; id: string; dir: -1 | 1 }
   | {
-      type: "APPLY_ROSTER_TO_DAY";
+      type: "APPLY_BASE_ROSTER_TO_DAY";
       dayId: string;
       correctionReason?: string;
       actor?: string;
     }
   | {
-      type: "SAVE_ROSTER_MEMBER";
-      dayId: string;
+      type: "SAVE_BASE_ROSTER_MEMBER";
+      roundId: string;
       personId: string;
       shareMin: number;
+      role?: EntryRole;
       notes?: string;
       actor?: string;
     }
-  | { type: "MOVE_ROSTER_MEMBER"; dayId: string; id: string; dir: -1 | 1; actor?: string }
   | {
-      type: "REMOVE_ROSTER_MEMBER";
-      id: string;
+      type: "BULK_ADD_BASE_ROSTER";
+      roundId: string;
+      items: { personId: string; shareMin: number; role?: EntryRole }[];
+      actor?: string;
+    }
+  | { type: "SET_BASE_ROSTER_SHARE"; id: string; shareMin: number; actor?: string }
+  | { type: "MOVE_BASE_ROSTER_MEMBER"; roundId: string; id: string; dir: -1 | 1; actor?: string }
+  | { type: "REMOVE_BASE_ROSTER_MEMBER"; id: string; reason?: string; actor?: string }
+  | {
+      type: "SET_ROUND_ROSTER_LOCK";
+      roundId: string;
+      locked: boolean;
       reason?: string;
       actor?: string;
     }
-  | { type: "COPY_ROSTER"; fromDayId: string; toDayId: string; actor?: string }
   | { type: "REMOVE_ENTRY"; id: string; reason?: string; actor?: string }
   | {
       type: "RECORD_USAGE";
@@ -578,13 +590,15 @@ function reducer(state: AppState, action: Action): AppState {
           action.day.capacityMin ||
           durationMin(action.day.workStart, action.day.workEnd),
       };
-      /* اليوم الجديد يُبنى من أساسيي هذا اليوم — وقائمته تبدأ فارغة، فلا صفوف تلقائية */
-      const entries =
-        action.planFromSchedule && state.pump
-          ? planEntriesFromRoster(state, state.pump, dayRecord).map(
-              (e) => ({ ...e, dayId: dayRecord.id }) as DayEntry
-            )
-          : action.entries.map((e) => ({ ...e, dayId: action.day.id }));
+      /* يوم جديد: «الدوام الفعلي» يبدأ يدويًا من كشف الديالة، فلا صفوف تلقائية */
+      const dayPlan = action.planFromSchedule && state.pump
+        ? planEntriesFromBaseRoster(
+            { ...state, days: [...state.days, dayRecord] },
+            state.pump,
+            dayRecord
+          ).map((e) => ({ ...e, dayId: dayRecord.id }) as DayEntry)
+        : null;
+      const entries: DayEntry[] = dayPlan ?? action.entries.map((e) => ({ ...e, dayId: action.day.id }));
       const next = {
         ...state,
         days: [...state.days, dayRecord],
@@ -829,10 +843,31 @@ function reducer(state: AppState, action: Action): AppState {
         /* لا يُملأ اليوم تلقائيًا: أساسيّوه يُضافون يدويًا لكل يوم على حدة */
       }
       const round: DialaRound = { ...action.round };
+      /* وراثة كشف الدوام الأساسي: نفس الأشخاص ونفس الترتيب ونفس النصيب من آخر ديالة
+         غير مؤرشفة — ثم يُثبَّت ويُعدَّل عند الحاجة، فلا يُعاد إدخال 50 اسمًا كل دورة */
+      const previous = state.rounds
+        .filter((r) => !r.archived && r.id !== round.id)
+        .sort((a, b) => b.number - a.number)[0];
+      const inherited: BaseRosterMember[] = previous
+        ? baseRosterRows(state, previous.id).map((row, i) => ({
+            id: uid("rst"),
+            pumpId: round.pumpId,
+            roundId: round.id,
+            personId: row.personId,
+            shareMin: row.shareMin,
+            order: i,
+            role: row.role,
+            notes: `موروث من كشف ديالة ${previous.number}`,
+            archived: false,
+            createdAt: new Date().toISOString(),
+            createdBy: "system",
+          }))
+        : [];
       const next = {
         ...state,
         rounds: [...state.rounds, round],
         days: [...state.days, ...newDays],
+        roster: [...state.roster, ...inherited],
         counters: {
           diala: Math.max(number, state.counters.diala),
           round: Math.max(state.counters.round, round.number + 1),
@@ -842,7 +877,7 @@ function reducer(state: AppState, action: Action): AppState {
         action: "create",
         entity: "round",
         entityId: round.id,
-        summary: `إنشاء ديالة ${round.number}: من ${round.startDate} إلى ${round.endDate} (${round.days} يوم، أُنشئ ${newDays.length} يوم)`,
+        summary: `إنشاء ديالة ${round.number}: من ${round.startDate} إلى ${round.endDate} (${round.days} يوم، أُنشئ ${newDays.length} يوم${inherited.length > 0 ? `، ووُرِّث كشف الديالة السابقة (${inherited.length} شخص)` : ""})`,
         after: round,
         op: "create",
         notify: [
@@ -1056,25 +1091,35 @@ function reducer(state: AppState, action: Action): AppState {
       });
     }
 
-    /* ------------- أساسيو اليوم: قوائم مستقلة، كل يوم على حدة ------------- */
-    case "SAVE_ROSTER_MEMBER": {
-      const day = state.days.find((d) => d.id === action.dayId);
-      if (!day) return state;
-      const roster = state.roster ?? [];
-      const current = roster.filter((r) => r.dayId === action.dayId && !r.archived);
-      const existing = current.find((r) => r.personId === action.personId);
+    /* -------- كشف الدوام الأساسي: كشف واحد لكل ديالة، حدّه ساعات التشغيل -------- */
+
+    case "SAVE_BASE_ROSTER_MEMBER": {
+      const round = state.rounds.find((r) => r.id === action.roundId);
+      if (!round || !state.pump) return state;
+      if (round.rosterLocked) return state;
+      const rows = baseRosterRows(state, round.id);
+      const existing = rows.find((r) => r.personId === action.personId);
+      const shareMin = Math.max(0, Math.round(action.shareMin));
+      const extra = existing ? shareMin - existing.shareMin : shareMin;
+      /* منع تام: مجموع النصيب لا يتجاوز ساعات تشغيل الدوام الأساسي */
+      if (!baseRosterFits(state, state.pump, round.id, extra, existing?.member.id)) return state;
       const at = new Date().toISOString();
       const actor = action.actor ?? "manager";
-      const shareMin = Math.max(0, Math.round(action.shareMin));
-      const member: DayRosterMember = existing
-        ? { ...existing, shareMin, notes: action.notes ?? existing.notes }
+      const member: BaseRosterMember = existing
+        ? {
+            ...existing.member,
+            shareMin,
+            role: action.role ?? existing.member.role,
+            notes: action.notes ?? existing.member.notes,
+          }
         : {
             id: uid("rst"),
-            pumpId: day.pumpId,
-            dayId: action.dayId,
+            pumpId: round.pumpId,
+            roundId: round.id,
             personId: action.personId,
             shareMin,
-            order: current.length,
+            order: rows.length,
+            role: action.role ?? "shareholder",
             notes: action.notes ?? "",
             archived: false,
             createdAt: at,
@@ -1082,7 +1127,9 @@ function reducer(state: AppState, action: Action): AppState {
           };
       const next = {
         ...state,
-        roster: existing ? roster.map((r) => (r.id === member.id ? member : r)) : [...roster, member],
+        roster: existing
+          ? state.roster.map((r) => (r.id === member.id ? member : r))
+          : [...state.roster, member],
       };
       const who = personName(state, action.personId);
       return commit(state, next, {
@@ -1090,17 +1137,84 @@ function reducer(state: AppState, action: Action): AppState {
         entity: "roster",
         entityId: member.id,
         summary: existing
-          ? `تعديل حصة ${who} في يوم ${isoToShort(day.date)} إلى ${shareMin} دقيقة`
-          : `إضافة ${who} إلى أساسيي يوم ${isoToShort(day.date)} بحصة ${shareMin} دقيقة`,
-        before: existing ?? "",
+          ? `تعديل نصيب ${who} في كشف ديالة ${round.number} إلى ${shareMin} دقيقة`
+          : `إضافة ${who} إلى كشف ديالة ${round.number} بنصيب ${shareMin} دقيقة`,
+        before: existing?.member ?? "",
         after: member,
         op: existing ? "update" : "create",
         actor,
       });
     }
 
-    case "MOVE_ROSTER_MEMBER": {
-      const rows = rosterRows(state, action.dayId);
+    case "BULK_ADD_BASE_ROSTER": {
+      const round = state.rounds.find((r) => r.id === action.roundId);
+      if (!round || !state.pump) return state;
+      if (round.rosterLocked) return state;
+      const rows = baseRosterRows(state, round.id);
+      const have = new Set(rows.map((r) => r.personId));
+      const cap = baseRosterCapacityMin(state.pump);
+      let used = rows.reduce((sum, r) => sum + r.shareMin, 0);
+      const at = new Date().toISOString();
+      const actor = action.actor ?? "manager";
+      const added: BaseRosterMember[] = [];
+      for (const item of action.items) {
+        if (have.has(item.personId)) continue;
+        const share = Math.max(0, Math.round(item.shareMin));
+        if (share <= 0) continue;
+        if (used + share > cap) continue; /* من لن يتّسع له الوقت لا يُضاف */
+        have.add(item.personId);
+        used += share;
+        added.push({
+          id: uid("rst"),
+          pumpId: round.pumpId,
+          roundId: round.id,
+          personId: item.personId,
+          shareMin: share,
+          order: rows.length + added.length,
+          role: item.role ?? "shareholder",
+          notes: "إضافة جماعية إلى كشف الديالة",
+          archived: false,
+          createdAt: at,
+          createdBy: actor,
+        });
+      }
+      if (added.length === 0) return state;
+      return commit(state, { ...state, roster: [...state.roster, ...added] }, {
+        action: "create",
+        entity: "roster",
+        entityId: round.id,
+        summary: `إضافة ${added.length} شخصًا إلى كشف ديالة ${round.number} — المجموع الآن ${used} دقيقة من ${cap}`,
+        after: added,
+        op: "create",
+        actor,
+      });
+    }
+
+    case "SET_BASE_ROSTER_SHARE": {
+      const member = state.roster.find((r) => r.id === action.id);
+      if (!member || !state.pump) return state;
+      const round = state.rounds.find((r) => r.id === member.roundId);
+      if (!round || round.rosterLocked) return state;
+      const shareMin = Math.max(0, Math.round(action.shareMin));
+      const extra = shareMin - (member.shareMin || 0);
+      if (!baseRosterFits(state, state.pump, member.roundId, extra, member.id)) return state;
+      const next = {
+        ...state,
+        roster: state.roster.map((r) => (r.id === member.id ? { ...r, shareMin } : r)),
+      };
+      return commit(state, next, {
+        action: "update",
+        entity: "roster",
+        entityId: member.id,
+        summary: `تعديل نصيب ${personName(state, member.personId)} في كشف ديالة ${round.number} إلى ${shareMin} دقيقة`,
+        before: { shareMin: member.shareMin },
+        after: { shareMin },
+        actor: action.actor,
+      });
+    }
+
+    case "MOVE_BASE_ROSTER_MEMBER": {
+      const rows = baseRosterRows(state, action.roundId);
       const index = rows.findIndex((r) => r.member.id === action.id);
       const target = index + action.dir;
       if (index < 0 || target < 0 || target >= rows.length) return state;
@@ -1109,37 +1223,36 @@ function reducer(state: AppState, action: Action): AppState {
       orderOf.set(rows[target].member.id, index);
       const next = {
         ...state,
-        roster: (state.roster ?? []).map((r) =>
-          orderOf.has(r.id) ? { ...r, order: orderOf.get(r.id)! } : r
-        ),
+        roster: state.roster.map((r) => (orderOf.has(r.id) ? { ...r, order: orderOf.get(r.id)! } : r)),
       };
       return commit(state, next, {
         action: "update",
         entity: "roster",
         entityId: action.id,
-        summary: `${action.dir === -1 ? "تقديم" : "تأخير"} ${rows[index].name} داخل اليوم فقط`,
+        summary: `${action.dir === -1 ? "تقديم" : "تأخير"} ${rows[index].name} في كشف الديالة (الترتيب يُورَّث للديالة التالية)`,
         before: { order: index },
         after: { order: target },
         actor: action.actor,
       });
     }
 
-    case "REMOVE_ROSTER_MEMBER": {
-      const member = (state.roster ?? []).find((r) => r.id === action.id);
+    case "REMOVE_BASE_ROSTER_MEMBER": {
+      const member = state.roster.find((r) => r.id === action.id);
       if (!member) return state;
-      const day = state.days.find((d) => d.id === member.dayId);
+      const round = state.rounds.find((r) => r.id === member.roundId);
+      if (round?.rosterLocked) return state;
       const at = new Date().toISOString();
-      /* حذف ناعم: يؤثر على قائمة هذا اليوم وحده — لا صف استخدام ولا يوم آخر يُمَسّ */
+      /* حذف ناعم: يحرّر وقته في الكشف — ولا يمسّ أي صف دوام فعلي ولا استخدامًا */
       const next = {
         ...state,
-        roster: (state.roster ?? []).map((r) =>
+        roster: state.roster.map((r) =>
           r.id === action.id
             ? {
                 ...r,
                 archived: true,
                 deletedAt: at,
                 deletedBy: action.actor ?? "manager",
-                deletionReason: action.reason ?? "إزالة من أساسيي اليوم (حذف ناعم)",
+                deletionReason: action.reason ?? "إزالة من كشف الدوام الأساسي (حذف ناعم)",
               }
             : r
         ),
@@ -1148,7 +1261,7 @@ function reducer(state: AppState, action: Action): AppState {
         action: "delete",
         entity: "roster",
         entityId: action.id,
-        summary: `إزالة ${personName(state, member.personId)} من أساسيي يوم ${day ? isoToShort(day.date) : ""} (بقية الأيام لا تتأثر)`,
+        summary: `إزالة ${personName(state, member.personId)} من كشف ${round ? `ديالة ${round.number}` : "الديالة"} (تحرير نصيبه ${member.shareMin} دقيقة)`,
         before: member,
         after: { ...member, archived: true },
         reason: action.reason,
@@ -1156,47 +1269,34 @@ function reducer(state: AppState, action: Action): AppState {
       });
     }
 
-    case "COPY_ROSTER": {
-      const from = state.days.find((d) => d.id === action.fromDayId);
-      const to = state.days.find((d) => d.id === action.toDayId);
-      if (!from || !to || from.id === to.id) return state;
-      const roster = state.roster ?? [];
-      const source = rosterRows(state, from.id);
-      const current = roster.filter((r) => r.dayId === to.id && !r.archived);
-      const have = new Set(current.map((r) => r.personId));
+    case "SET_ROUND_ROSTER_LOCK": {
+      const round = state.rounds.find((r) => r.id === action.roundId);
+      if (!round) return state;
       const at = new Date().toISOString();
-      const added: DayRosterMember[] = source
-        .filter((row) => !have.has(row.personId))
-        .map((row, i) => ({
-          id: uid("rst"),
-          pumpId: to.pumpId,
-          dayId: to.id,
-          personId: row.personId,
-          shareMin: row.shareMin,
-          order: current.length + i,
-          notes: `منسوخ من يوم ${isoToShort(from.date)}`,
-          archived: false,
-          createdAt: at,
-          createdBy: action.actor ?? "manager",
-        }));
-      if (added.length === 0) return state;
-      const next = { ...state, roster: [...roster, ...added] };
+      const count = baseRosterRows(state, round.id).length;
+      const next = {
+        ...state,
+        rounds: state.rounds.map((r) =>
+          r.id === round.id ? { ...r, rosterLocked: action.locked } : r
+        ),
+      };
       return commit(state, next, {
-        action: "create",
+        action: action.locked ? "lock" : "unlock",
         entity: "roster",
-        entityId: to.id,
-        summary: `نسخ قائمة أساسيي يوم ${isoToShort(from.date)} إلى يوم ${isoToShort(to.date)} (${added.length} شخص)`,
-        after: added,
-        op: "create",
+        entityId: round.id,
+        summary: `${action.locked ? "تثبيت" : "فك تثبيت"} كشف ديالة ${round.number} (${count} شخص)`,
+        reason: action.reason,
+        before: { rosterLocked: round.rosterLocked ?? false },
+        after: { rosterLocked: action.locked, at },
         actor: action.actor,
       });
     }
 
-    case "APPLY_ROSTER_TO_DAY": {
+    case "APPLY_BASE_ROSTER_TO_DAY": {
       if (!state.pump) return state;
       const day = state.days.find((d) => d.id === action.dayId);
       if (!day) return state;
-      const planned = planEntriesFromRoster(state, state.pump, day);
+      const planned = planEntriesFromBaseRoster(state, state.pump, day);
       const at = new Date().toISOString();
       const actor = action.actor ?? "manager";
       const current = state.entries.filter((e) => e.dayId === day.id && !e.archived);
@@ -1239,7 +1339,7 @@ function reducer(state: AppState, action: Action): AppState {
                   archived: true,
                   deletedAt: at,
                   deletedBy: actor,
-                  deletionReason: action.correctionReason ?? "لم يعد من أساسيي هذا اليوم",
+                  deletionReason: action.correctionReason ?? "لم يعد في كشف الديالة",
                 }
               : e
           ),
@@ -1254,14 +1354,14 @@ function reducer(state: AppState, action: Action): AppState {
         "roster",
         current.length,
         rebuilt.length,
-        action.correctionReason ?? "بناء ترتيب اليوم من أساسييه",
+        action.correctionReason ?? "بدء الدوام الفعلي من كشف الديالة",
         actor
       );
       return commit(state, { ...next, corrections }, {
         action: "update",
         entity: "day",
         entityId: day.id,
-        summary: `بناء ترتيب يوم ${isoToShort(day.date)} من أساسييه (${rebuilt.length} شخص)`,
+        summary: `بدء الدوام الفعلي ليوم ${isoToShort(day.date)} من كشف الديالة (${rebuilt.length} شخص)`,
         reason: action.correctionReason,
         actor,
       });
@@ -2492,18 +2592,26 @@ export interface AppActions {
     opts?: { correctionReason?: string; actor?: string }
   ) => void;
   moveEntry: (id: string, dir: -1 | 1) => void;
-  /** بناء ترتيب اليوم من أساسيي هذا اليوم (لا يحذف أي صف فيه استخدام مسجّل) */
-  applyRosterToDay: (dayId: string, opts?: { correctionReason?: string; actor?: string }) => void;
-  /** أساسيو اليوم: إضافة/تعديل شخص في قائمة يوم واحد بحصته */
-  saveRosterMember: (
-    dayId: string,
+  /** بدء الدوام الفعلي من كشف الديالة (لا يحذف أي صف فيه استخدام مسجّل) */
+  applyBaseRosterToDay: (dayId: string, opts?: { correctionReason?: string; actor?: string }) => void;
+  /** كشف الدوام الأساسي: إضافة/تعديل نصيب شخص في كشف الديالة */
+  saveBaseRosterMember: (
+    roundId: string,
     personId: string,
     shareMin: number,
-    opts?: { notes?: string; actor?: string }
+    opts?: { role?: EntryRole; notes?: string; actor?: string }
   ) => void;
-  moveRosterMember: (dayId: string, id: string, dir: -1 | 1, actor?: string) => void;
-  removeRosterMember: (id: string, opts?: { reason?: string; actor?: string }) => void;
-  copyRoster: (fromDayId: string, toDayId: string, actor?: string) => void;
+  /** إضافة جماعية إلى الكشف — تُضاف الأسطر حتى تمتلئ ساعات التشغيل */
+  bulkAddBaseRoster: (
+    roundId: string,
+    items: { personId: string; shareMin: number; role?: EntryRole }[],
+    actor?: string
+  ) => void;
+  setBaseRosterShare: (id: string, shareMin: number, actor?: string) => void;
+  moveBaseRosterMember: (roundId: string, id: string, dir: -1 | 1, actor?: string) => void;
+  removeBaseRosterMember: (id: string, opts?: { reason?: string; actor?: string }) => void;
+  /** تثبيت/فك تثبيت كشف الديالة */
+  setRoundRosterLock: (roundId: string, locked: boolean, reason?: string, actor?: string) => void;
   removeEntry: (id: string, opts?: { reason?: string; actor?: string }) => void;
   recordUsage: (input: {
     dayId: string;
@@ -2704,15 +2812,20 @@ export function AppProvider({
       saveEntries: (dayId, entries, opts) =>
         dispatch({ type: "SAVE_ENTRIES", dayId, entries, ...opts }),
       moveEntry: (id, dir) => dispatch({ type: "MOVE_ENTRY", id, dir }),
-      applyRosterToDay: (dayId, opts) =>
-        dispatch({ type: "APPLY_ROSTER_TO_DAY", dayId, ...opts }),
-      saveRosterMember: (dayId, personId, shareMin, opts) =>
-        dispatch({ type: "SAVE_ROSTER_MEMBER", dayId, personId, shareMin, ...opts }),
-      moveRosterMember: (dayId, id, dir, actor) =>
-        dispatch({ type: "MOVE_ROSTER_MEMBER", dayId, id, dir, actor }),
-      removeRosterMember: (id, opts) => dispatch({ type: "REMOVE_ROSTER_MEMBER", id, ...opts }),
-      copyRoster: (fromDayId, toDayId, actor) =>
-        dispatch({ type: "COPY_ROSTER", fromDayId, toDayId, actor }),
+      applyBaseRosterToDay: (dayId, opts) =>
+        dispatch({ type: "APPLY_BASE_ROSTER_TO_DAY", dayId, ...opts }),
+      saveBaseRosterMember: (roundId, personId, shareMin, opts) =>
+        dispatch({ type: "SAVE_BASE_ROSTER_MEMBER", roundId, personId, shareMin, ...opts }),
+      bulkAddBaseRoster: (roundId, items, actor) =>
+        dispatch({ type: "BULK_ADD_BASE_ROSTER", roundId, items, actor }),
+      setBaseRosterShare: (id, shareMin, actor) =>
+        dispatch({ type: "SET_BASE_ROSTER_SHARE", id, shareMin, actor }),
+      moveBaseRosterMember: (roundId, id, dir, actor) =>
+        dispatch({ type: "MOVE_BASE_ROSTER_MEMBER", roundId, id, dir, actor }),
+      removeBaseRosterMember: (id, opts) =>
+        dispatch({ type: "REMOVE_BASE_ROSTER_MEMBER", id, ...opts }),
+      setRoundRosterLock: (roundId, locked, reason, actor) =>
+        dispatch({ type: "SET_ROUND_ROSTER_LOCK", roundId, locked, reason, actor }),
       removeEntry: (id, opts) => dispatch({ type: "REMOVE_ENTRY", id, ...opts }),
       recordUsage: (input) => dispatch({ type: "RECORD_USAGE", ...input }),
       setUsageSettlement: (usageId, input) =>

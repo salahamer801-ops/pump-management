@@ -7,13 +7,14 @@ import type {
   ActualUsage,
   AppState,
   AuditLog,
+  BaseRosterMember,
   ContributorV1,
   CycleV1,
   DialaDay,
   DialaRound,
   DayEntry,
-  DayRosterMember,
   Debt,
+  EntryRole,
   OtherChargeV1,
   Person,
   Pump,
@@ -132,55 +133,175 @@ function linkDaysToRounds(input: AppState): Pick<AppState, "rounds" | "days" | "
   };
 }
 
+/** سطر كشف كما كان محفوظًا سابقًا (مفتاحه يوم أو ديالة) */
+type RawRosterRow = Partial<BaseRosterMember> & { dayId?: string };
+
+/** مدة الصف المخطَّط كما كان مسجَّلًا (قراءة فقط) */
+function plannedMinOf(entry: DayEntry): number {
+  if (entry.startTime && entry.endTime) return durationMin(entry.startTime, entry.endTime);
+  return entry.plannedMin || 0;
+}
+
 /**
- * ترحيل ناعم (مرة واحدة): يوم مسجَّل فيه صفوف فعلًا وقائمته فارغة/غير موجودة،
- * تُقرأ صفوفه الحالية (شخص + مدته) لتصبح قائمته — فلا يبدو يوم مسجَّل وكأنه فارغ.
- * القاعدة: لا حذف ولا تعديل لأي صف أو استخدام — قراءة فقط.
- * تُدمج صفوف الشخص الواحد في سطر واحد بمجموع مدده.
+ * ترحيل ناعم إلى **كشف الديالة** (ترتيب واحد لكل أيام الديالة):
+ *
+ * 1) أي أسطر كشف قديمة كانت مفتاحها **اليوم** (`dayId`) تُجمع بالديالة وبالشخص:
+ *    شخص واحد = سطر واحد، ونصيبه = **الأكبر** بين أيامه (لا يُقلَّص نصيب أحد)،
+ *    والأسطر القديمة تبقى **مؤرشفة** وموسومة بـ `legacyDayId` — لا يُحذف أي سجل.
+ * 2) أي ديالة لا كشف لها تُبنى من صفوف أيامها المسجّلة (شخص + نصيب اليوم الأكبر).
+ * 3) الديالات التي لها كشف تبقى كما هي — لا تُعاد بناؤها ولا تُلمس.
  */
-export function seedRosterFromEntries(
+export function migrateRosterToRounds(
+  rounds: DialaRound[],
   days: DialaDay[],
   entries: DayEntry[],
-  existing: DayRosterMember[]
-): DayRosterMember[] {
-  const covered = new Set(existing.filter((r) => !r.archived).map((r) => r.dayId));
-  const out: DayRosterMember[] = [...existing];
-  for (const day of days.filter((d) => !d.archived)) {
-    if (covered.has(day.id)) continue;
-    const rows = entries
-      .filter((e) => e.dayId === day.id && !e.archived)
-      .sort((a, b) => a.orderIndex - b.orderIndex);
-    if (rows.length === 0) continue;
-    const byPerson = new Map<string, { shareMin: number; order: number }>();
-    rows.forEach((e, index) => {
-      const minutes =
-        e.plannedMin > 0 && !e.startTime && !e.endTime
-          ? e.plannedMin
-          : e.startTime && e.endTime
-            ? durationMin(e.startTime, e.endTime)
-            : e.plannedMin || 0;
-      const seen = byPerson.get(e.personId);
-      if (seen) seen.shareMin += minutes;
-      else byPerson.set(e.personId, { shareMin: minutes, order: index });
-    });
-    [...byPerson.entries()]
-      .sort((a, b) => a[1].order - b[1].order)
-      .forEach(([personId, info], order) => {
-        out.push({
-          id: uid("rst"),
-          pumpId: day.pumpId,
-          dayId: day.id,
-          personId,
-          shareMin: info.shareMin,
-          order,
-          notes: "قرئت من صفوف اليوم المسجَّلة",
-          archived: false,
-          createdAt: new Date().toISOString(),
-          createdBy: "system",
-        });
+  raw: RawRosterRow[] | undefined
+): BaseRosterMember[] {
+  const now = new Date().toISOString();
+  const roundByLegacyDay = new Map<string, string>();
+  for (const d of days) if (d.roundId) roundByLegacyDay.set(d.id, d.roundId);
+
+  const kept: BaseRosterMember[] = [];
+  const legacy: BaseRosterMember[] = [];
+  const byRoundPerson = new Map<string, BaseRosterMember>();
+
+  for (const row of raw ?? []) {
+    if (!row.personId) continue;
+    const personId = row.personId;
+    if (row.roundId) {
+      /* سطر كشف حديث — يبقى كما هو */
+      kept.push({
+        id: row.id ?? uid("rst"),
+        pumpId: row.pumpId ?? "",
+        roundId: row.roundId,
+        personId,
+        shareMin: row.shareMin ?? 0,
+        order: row.order ?? 0,
+        role: row.role ?? "shareholder",
+        notes: row.notes ?? "",
+        archived: row.archived ?? false,
+        createdAt: row.createdAt ?? now,
+        createdBy: row.createdBy ?? "system",
       });
+      continue;
+    }
+    if (!row.dayId) continue;
+    const roundId = roundByLegacyDay.get(row.dayId);
+    if (!roundId) continue;
+    legacy.push({
+      id: row.id ?? uid("rst"),
+      pumpId: row.pumpId ?? "",
+      roundId,
+      personId,
+      shareMin: row.shareMin ?? 0,
+      order: row.order ?? 0,
+      role: row.role ?? "shareholder",
+      notes: row.notes ?? "",
+      archived: true,
+      deletedAt: now,
+      deletedBy: "system",
+      deletionReason: "نُقل إلى كشف الديالة (ترحيل ناعم)",
+      createdAt: row.createdAt ?? now,
+      createdBy: row.createdBy ?? "system",
+      legacyDayId: row.dayId,
+    });
+    if (row.archived) continue;
+    const key = `${roundId}::${personId}`;
+    const existing = byRoundPerson.get(key);
+    const share = row.shareMin ?? 0;
+    if (existing) {
+      if (share > existing.shareMin) existing.shareMin = share;
+      if ((row.order ?? 0) < existing.order) existing.order = row.order ?? 0;
+      existing.notes = "جُمع من قوائم أيام الديالة (أكبر نصيب)";
+    } else {
+      byRoundPerson.set(key, {
+        id: uid("rst"),
+        pumpId: row.pumpId ?? "",
+        roundId,
+        personId,
+        shareMin: share,
+        order: row.order ?? 0,
+        role: row.role ?? "shareholder",
+        notes: "جُمع من قوائم أيام الديالة",
+        archived: false,
+        createdAt: now,
+        createdBy: "system",
+        legacyDayId: row.dayId,
+      });
+    }
   }
-  return out;
+
+  /* الديالات التي لها كشف فعلًا — لا تُبنى من جديد */
+  const covered = new Set<string>();
+  for (const row of kept) if (!row.archived) covered.add(row.roundId);
+  for (const row of byRoundPerson.values()) covered.add(row.roundId);
+
+  const seeded: BaseRosterMember[] = [];
+  for (const round of rounds.filter((r) => !r.archived)) {
+    if (covered.has(round.id)) continue;
+    const roundDays = days
+      .filter((d) => d.roundId === round.id && !d.archived)
+      .sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
+    const perPerson = new Map<string, { shareMin: number; order: number; role: EntryRole; dayId: string }>();
+    let index = 0;
+    for (const day of roundDays) {
+      const rows = entries
+        .filter((e) => e.dayId === day.id && !e.archived)
+        .sort((a, b) => a.orderIndex - b.orderIndex);
+      const dayTotals = new Map<string, { min: number; role: EntryRole }>();
+      for (const e of rows) {
+        const minutes = plannedMinOf(e);
+        const seen = dayTotals.get(e.personId);
+        if (seen) seen.min += minutes;
+        else dayTotals.set(e.personId, { min: minutes, role: e.role });
+      }
+      for (const [personId, info] of dayTotals) {
+        const seen = perPerson.get(personId);
+        if (seen) {
+          if (info.min > seen.shareMin) {
+            seen.shareMin = info.min;
+            seen.dayId = day.id;
+          }
+        } else {
+          perPerson.set(personId, { shareMin: info.min, order: index++, role: info.role, dayId: day.id });
+        }
+      }
+    }
+    if (perPerson.size === 0) continue;
+    for (const [personId, info] of [...perPerson.entries()].sort((a, b) => a[1].order - b[1].order)) {
+      seeded.push({
+        id: uid("rst"),
+        pumpId: round.pumpId,
+        roundId: round.id,
+        personId,
+        shareMin: info.shareMin,
+        order: info.order,
+        role: info.role ?? "shareholder",
+        notes: "قُرئ من صفوف أيام الديالة المسجّلة",
+        archived: false,
+        createdAt: now,
+        createdBy: "system",
+        legacyDayId: info.dayId,
+      });
+    }
+  }
+
+  /* ترتيب نهائي لكل ديالة: من 0 إلى n بلا فراغات — والترتيب يُثبَّت ويُورَّث */
+  const all = [...kept, ...byRoundPerson.values(), ...seeded];
+  const byRound = new Map<string, BaseRosterMember[]>();
+  for (const row of all) {
+    const list = byRound.get(row.roundId) ?? [];
+    list.push(row);
+    byRound.set(row.roundId, list);
+  }
+  const ordered: BaseRosterMember[] = [];
+  for (const list of byRound.values()) {
+    list
+      .slice()
+      .sort((a, b) => a.order - b.order)
+      .forEach((row, i) => ordered.push({ ...row, order: i }));
+  }
+  return [...ordered, ...legacy];
 }
 
 /**
@@ -229,18 +350,14 @@ export function normalizeState(
         d.plannedCapacityMin ?? d.capacityMin ?? durationMin(d.workStart, d.workEnd),
     })),
     entries: (input.entries ?? []).map((e) => ({ ...e, archived: e.archived ?? false })),
-    /* قوائم أساسيي الأيام: تُقرأ كما هي، وإن لم تكن موجودة أصلًا (حالة قبل هذا التحديث)
-       تُبنى مرة واحدة من صفوف الأيام المسجَّلة — ولا تُعاد بناؤها بعدها أبدًا */
-    roster:
-      input.roster === undefined
-        ? seedRosterFromEntries(linked.days, input.entries ?? [], [])
-        : input.roster.map((r) => ({
-            ...r,
-            shareMin: r.shareMin ?? 0,
-            order: r.order ?? 0,
-            notes: r.notes ?? "",
-            archived: r.archived ?? false,
-          })),
+    /* كشف الديالة: أسطر الديالة تبقى، والأسطر اليومية القديمة تُجمع في كشف ديالتها
+       بلا حذف أي سجل (تبقى مؤرشفة موسومة بـ legacyDayId) */
+    roster: migrateRosterToRounds(
+      linked.rounds,
+      linked.days,
+      input.entries ?? [],
+      input.roster as RawRosterRow[] | undefined
+    ),
     usages,
     stoppages: (input.stoppages ?? []).map((s) => ({ ...s, archived: s.archived ?? false })),
     operatorRecords: (input.operatorRecords ?? []).map((o) => {

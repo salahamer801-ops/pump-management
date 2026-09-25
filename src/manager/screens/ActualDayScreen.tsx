@@ -65,7 +65,8 @@ import {
   roundDates,
   roundForDate,
   roundOfDay,
-  isRosterMember,
+  baseRosterRows,
+  isBaseRosterPerson,
   shareholderOfPerson,
   shortageAmountOf,
   stoppageMinutesInRange,
@@ -103,7 +104,7 @@ import {
 } from "../../components/ui";
 import PersonPicker, { roleLabel } from "../../components/PersonPicker";
 import ShareholdersPanel from "../components/ShareholdersPanel";
-import DayRosterPanel from "../components/DayRosterPanel";
+import DayBaseShiftCard from "../components/DayBaseShiftCard";
 import { AddDialaButton } from "../components/AddDialaModal";
 import { DayStatusPill } from "./Dashboard";
 
@@ -184,6 +185,11 @@ export default function ActualDayScreen({
 
   /** الديالة التي يقع فيها التاريخ المختار — لا يوجد يوم خارج الديالة */
   const dialaForDate = useMemo(() => roundForDate(state, date), [state, date]);
+  /** أسطر كشف الدوام الأساسي لديالة هذا اليوم — للزر وللشارات */
+  const baseRows = useMemo(
+    () => baseRosterRows(state, day?.roundId ?? dialaForDate?.id ?? null),
+    [state, day?.roundId, dialaForDate?.id]
+  );
   const dialaDayIndex = dialaForDate
     ? roundDates(dialaForDate.startDate, dialaForDate.days).indexOf(date) + 1
     : 0;
@@ -431,8 +437,8 @@ export default function ActualDayScreen({
       {/* 1) المساهمون الأساسيون — سجل مرجعي ثابت لا يتغيّر بتغيّر اليوم */}
       <ShareholdersPanel dayId={day.id} actor={actorName} />
 
-      {/* 2) أساسيو هذا اليوم — قائمة مستقلة لكل يوم، تُبنى يدويًا وتبدأ فارغة */}
-      <DayRosterPanel day={day} actor={actorName} />
+      {/* 2) الدوام الأساسي — كشف الديالة: أسماء المساهمين ونصيب كل واحد في هذا الدور */}
+      <DayBaseShiftCard day={day} actor={actorName} />
 
       {issues.length > 0 ? (
         <Card className="space-y-2 p-4">
@@ -471,11 +477,13 @@ export default function ActualDayScreen({
         </Card>
       ) : null}
 
-      {/* 3) المستخدمون الفعليون: الاسم والرقم والساعات والديزل والرواسة */}
+      {/* 3) الدوام الفعلي: من أخذ ماءه أو قاسم أسهم هذا اليوم */}
       <Card className="p-4">
         <div className="mb-3 flex items-center gap-2">
           <Users size={16} className="text-emerald-600" />
-          <h2 className="text-sm font-extrabold text-gray-800 dark:text-white">المستخدمون الفعليون</h2>
+          <h2 className="text-sm font-extrabold text-gray-800 dark:text-white">
+            الدوام الفعلي — من أخذ ماءه أو قاسم أسهم هذا اليوم
+          </h2>
           <span className="mr-auto text-[11px] text-gray-400">
             {entries.length} مستخدم · {formatDuration(summary?.plannedMin ?? 0)} من {toHours(window.capacityMin)} ساعة
           </span>
@@ -485,7 +493,7 @@ export default function ActualDayScreen({
 
         {entries.length === 0 ? (
           <p className="py-4 text-center text-xs text-gray-400">
-            لا يوجد مستخدمون في هذا اليوم بعد — أضف شخصًا أو استرجع الجدول الأساسي.
+            لا يوجد أحد في الدوام الفعلي لهذا اليوم بعد — ابدأ من كشف الديالة أو أضف من أخذ ماءه فعلًا.
           </p>
         ) : (
           <div className="mt-3 space-y-2">
@@ -494,7 +502,7 @@ export default function ActualDayScreen({
                 key={entry.id}
                 index={index}
                 entry={entry}
-                rosterMember={isRosterMember(state, day.id, entry.personId)}
+                fromBaseRoster={isBaseRosterPerson(state, day.roundId ?? null, entry.personId)}
                 isFirst={index === 0}
                 isLast={index === entries.length - 1}
                 onEdit={() => setEditEntry(entry)}
@@ -545,19 +553,22 @@ export default function ActualDayScreen({
 
         <div className="mt-3 flex flex-wrap gap-2">
           <Button className="flex-1" onClick={() => setPickerOpen(true)}>
-            <Plus size={18} /> إضافة مستخدم
+            <Plus size={18} /> إضافة شخص للدوام الفعلي
           </Button>
-          <Button
-            variant="outline"
-            onClick={() => actions.applyRosterToDay(day.id, { correctionReason, actor: actorName })}
-            title="بناء ترتيب اليوم من أساسيي هذا اليوم"
-          >
-            <RefreshCcw size={16} /> بناء الترتيب من أساسيي اليوم
-          </Button>
+          {baseRows.length > 0 ? (
+            <Button
+              variant="secondary"
+              onClick={() => actions.applyBaseRosterToDay(day.id, { actor: actorName })}
+              title="ملء الدوام الفعلي من كشف الديالة بنفس الترتيب والنصيب"
+              data-testid="day-start-from-base"
+            >
+              <RefreshCcw size={16} /> ابدأ من كشف الديالة ({baseRows.length})
+            </Button>
+          ) : null}
         </div>
         <p className="mt-2 text-[10px] leading-relaxed text-gray-400">
-          ترتيب اليوم الفعلي لا يغيّر الجدول الأساسي ولا المساهمين الأساسيين. كل خيار تسديد (مسدد / نقص / غير مسدد ·
-          نقد / أجل) يُسجَّل كحركة مالية مستقلة في سجل التدقيق.
+          «الدوام الفعلي» يُعدَّل بحرية: من أخذ ماءه أو قاسم أسهم هذا اليوم — تقديم/تأخير نصيب، إضافة ضيف، بيع أو سلفة
+          أو غيرها. التعديل لا يغيّر «كشف الدوام الأساسي» ولا أي يوم آخر، وكل خيار تسديد يُسجَّل كحركة مالية وسجل تدقيق.
         </p>
       </Card>
 
@@ -1144,7 +1155,7 @@ function SettlementChips({
 function EntryRow({
   index,
   entry,
-  rosterMember,
+  fromBaseRoster,
   isFirst,
   isLast,
   onEdit,
@@ -1156,8 +1167,8 @@ function EntryRow({
 }: {
   index: number;
   entry: DayEntry;
-  /** هل هذا الشخص من أساسيي هذا اليوم (القائمة المستقلة لهذا اليوم) */
-  rosterMember: boolean;
+  /** هل هذا الشخص من كشف الدوام الأساسي لديالة هذا اليوم */
+  fromBaseRoster: boolean;
   isFirst: boolean;
   isLast: boolean;
   onEdit: () => void;
@@ -1200,8 +1211,8 @@ function EntryRow({
             <Pill tone={entry.role === "shareholder" ? "green" : entry.role === "tenant" ? "amber" : "gray"}>
               {roleLabel(entry.role)}
             </Pill>
-            {rosterMember ? (
-              <Pill tone="blue">أساسي في هذا اليوم</Pill>
+            {fromBaseRoster ? (
+              <Pill tone="blue">من كشف الديالة</Pill>
             ) : (
               <Pill tone="gray">{entry.role === "guest" ? "ضيف — لهذا اليوم فقط" : "لهذا اليوم فقط"}</Pill>
             )}

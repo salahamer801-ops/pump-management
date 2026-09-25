@@ -1,6 +1,7 @@
 import {
   useEffect,
   type ButtonHTMLAttributes,
+  type HTMLAttributes,
   type InputHTMLAttributes,
   type ReactNode,
   type SelectHTMLAttributes,
@@ -46,16 +47,15 @@ export function Button({
 export function Card({
   children,
   className,
-}: {
-  children: ReactNode;
-  className?: string;
-}) {
+  ...rest
+}: { children: ReactNode; className?: string } & HTMLAttributes<HTMLDivElement>) {
   return (
     <div
       className={cx(
         "rounded-3xl bg-white border border-gray-100 shadow-sm shadow-gray-100/60 dark:bg-slate-800 dark:border-slate-700 dark:shadow-none",
         className
       )}
+      {...rest}
     >
       {children}
     </div>

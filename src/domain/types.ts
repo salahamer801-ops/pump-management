@@ -182,6 +182,11 @@ export interface DialaRound extends SoftDeletable {
   locked: boolean;
   lockedAt: string;
   lockedBy: string;
+  /**
+   * كشف الدوام الأساسي مثبَّت: أسماء المساهمين ونصيب كل واحد وترتيبهم
+   * لا تُعدَّل إلا بفك التثبيت بسبب موثّق.
+   */
+  rosterLocked?: boolean;
   notes: string;
   createdAt: string;
   createdBy: string;
@@ -225,25 +230,30 @@ export type EntryRole = "shareholder" | "right_holder" | "tenant" | "guest" | "o
 export type EntryStatus = "planned" | "done" | "cancelled" | "postponed";
 
 /**
- * أساسيو يوم واحد من أيام الديالة — قائمة **مستقلة لكل يوم**.
- * القاعدة: القائمة تخصّ اليوم بمعرّفه (`dayId`)، تُنشأ فارغة، والمسؤول يضيف
- * من يشاء من الأشخاص المسجّلين ويحدّد لكل واحد حصته.
- * حذف أي شخص هنا يؤثر على هذا اليوم وحده — ولا يمسّ أي يوم آخر.
+ * سطر في **كشف الدوام الأساسي** — كشف واحد لكل ديالة، يخصّ جميع أيامها.
+ * القاعدة: تُسجَّل أسماء المساهمين الأساسيين ونصيب كل واحد مرة واحدة،
+ * ثم يُثبَّت الكشف، وتنتقل نفس الأسماء والترتيب والنصيب إلى الديالة التالية.
+ * ومجموع النصيب لا يتجاوز **ساعات تشغيل الدوام الأساسي** أبدًا.
+ * «الدوام الفعلي» لكل يوم قائمة أخرى مستقلة (صفوف اليوم) لا تمسّ هذا الكشف.
  */
-export interface DayRosterMember extends SoftDeletable {
+export interface BaseRosterMember extends SoftDeletable {
   id: ID;
   pumpId: ID;
-  /** اليوم الذي تخصّه القائمة — المفتاح الذي يجعل القوائم مستقلة */
-  dayId: ID;
+  /** الديالة التي يخصّها الكشف — المفتاح، وبه يُورَّث للديالة التالية */
+  roundId: ID;
   personId: ID;
-  /** حصته في اليوم بالدقائق (تُدخَل ساعات أو دقائق وتُخزَّن دقائق دائمًا) */
+  /** نصيبه في الدور بالدقائق (تُدخَل ساعات أو دقائق وتُخزَّن دقائق دائمًا) */
   shareMin: number;
-  /** ترتيبه داخل اليوم */
+  /** ترتيبه في الكشف — يُثبَّت ويُورَّث كما هو */
   order: number;
+  /** نوع علاقته: مساهم / صاحب حق / مستأجر / ضيف … */
+  role: EntryRole;
   notes: string;
   archived: boolean;
   createdAt: string;
   createdBy: string;
+  /** أثر ترحيل فقط: القائمة اليومية القديمة التي جاء منها هذا السطر */
+  legacyDayId?: ID;
 }
 
 /** ترتيب اليوم الفعلي — لا يغيّر الجدول الأساسي */
@@ -832,8 +842,8 @@ export interface AppState {
   rights: ShareRight[];
   rounds: DialaRound[];
   days: DialaDay[];
-  /** أساسيو كل يوم — قائمة مستقلة لكل يوم فعلي */
-  roster: DayRosterMember[];
+  /** كشف الدوام الأساسي: أسماء المساهمين ونصيب كل واحد في ديالته */
+  roster: BaseRosterMember[];
   entries: DayEntry[];
   usages: ActualUsage[];
   stoppages: Stoppage[];

@@ -26,7 +26,6 @@ import {
   pumpWindow,
   roundDates,
   roundDays,
-  rosterRows,
   rosterPersonSummaries,
   scheduleRows,
   totalUnits,
@@ -44,6 +43,7 @@ import {
 import { formatNumber } from "../../format";
 import { Button, Card, EmptyState, Field, Modal, Pill, TextInput, cx } from "../../components/ui";
 import { AddDialaButton } from "../components/AddDialaModal";
+import BaseRosterPanel from "../components/BaseRosterPanel";
 import { DayStatusPill } from "./Dashboard";
 
 export default function DialaScreen({ onOpenDay }: { onOpenDay: (id: string | null) => void }) {
@@ -331,13 +331,13 @@ function RoundCard({
         </div>
       </div>
 
+      <BaseRosterPanel round={round} actor="manager" />
+
       <div className="mt-2 grid grid-cols-4 gap-1 sm:grid-cols-7">
         {Array.from({ length: round.days }, (_, i) => {
           const date = addDaysISO(round.startDate, i);
           const day = state.days.find((d) => !d.archived && d.date === date) ?? null;
           const summary = day ? daySummary(state, day, pump) : null;
-          const roster = day ? rosterRows(state, day.id) : [];
-          const rosterMin = roster.reduce((s, r) => s + (r.shareMin || 0), 0);
           return (
             <button
               key={date}
@@ -346,8 +346,8 @@ function RoundCard({
                 day
                   ? `اليوم ${dayOrdinal(i + 1)} للديالة ${round.number} — ${isoToDisplay(date)} · ${statusLabel(day.status)}${
                       summary ? ` · ${summary.persons} شخص` : ""
-                    } · أساسيوه ${roster.length} (${formatDuration(rosterMin)})`
-                  : `إنشاء اليوم ${dayOrdinal(i + 1)} للديالة ${round.number} — ${isoToDisplay(date)} · قائمة أساسيين فارغة`
+                    } · الدوام الفعلي: ${summary?.persons ?? 0}`
+                  : `إنشاء اليوم ${dayOrdinal(i + 1)} للديالة ${round.number} — ${isoToDisplay(date)} · دوام فعلي فارغ`
               }
               aria-label={`اليوم ${dayOrdinal(i + 1)} للديالة ${round.number}`}
               className={cx(
@@ -358,7 +358,7 @@ function RoundCard({
               <span className="block">اليوم {dayOrdinal(i + 1)}</span>
               <span className="block text-[9px] font-normal opacity-70">{isoToShort(date)}</span>
               <span className="block text-[9px] font-bold opacity-80" data-testid={`round-${round.number}-day-roster-${i + 1}`}>
-                {day ? `${roster.length} أساسي` : "فارغ"}
+                {day ? `${summary?.persons ?? 0} في الفعلي` : "لم يُفتح"}
               </span>
             </button>
           );
@@ -370,14 +370,15 @@ function RoundCard({
         if (people.length === 0) {
           return (
             <p className="mt-2 rounded-2xl bg-gray-50 px-3 py-2 text-[10px] leading-relaxed text-gray-500 dark:bg-slate-700 dark:text-slate-300">
-              كل يوم في هذه الديالة يبدأ بقائمة أساسيين فارغة تخصّه وحده — افتح اليوم واضغط «إضافة إلى أساسيي هذا اليوم».
+              الكشف فارغ — أضف أسماء المساهمين ونصيب كل واحد أعلاه (بحدّ ساعات التشغيل)، ثم ابدأ «الدوام الفعلي» لكل
+              يوم من داخل اليوم.
             </p>
           );
         }
         return (
           <div className="mt-3">
             <div className="mb-1 flex items-center gap-1.5 text-[11px] font-extrabold text-gray-700 dark:text-slate-200">
-              <ListOrdered size={13} className="text-emerald-600" /> تداول الدورة (عرض وتحذير فقط)
+              <ListOrdered size={13} className="text-emerald-600" /> تداول الديالة (النصيب مقابل الدوام الفعلي)
             </div>
             <div className="space-y-1">
               {people.map((p) => (
@@ -389,13 +390,14 @@ function RoundCard({
                   <span className="text-gray-500 dark:text-slate-300">
                     الأيام: {p.dayNumbers.map((n) => dayOrdinal(n)).join("، ")}
                   </span>
-                  <span className="font-bold text-gray-600 dark:text-slate-200">{formatDuration(p.totalMin)}</span>
-                  {p.baseHoursMin > 0 ? (
-                    <Pill tone={p.diffMin === 0 ? "green" : p.diffMin > 0 ? "amber" : "gray"}>
-                      سهمه الأساسي {formatDuration(p.baseHoursMin)}
-                      {p.diffMin !== 0 ? ` (${p.diffMin > 0 ? "+" : "−"}${formatDuration(Math.abs(p.diffMin))})` : " · مطابق"}
-                    </Pill>
-                  ) : null}
+                  <span className="font-bold text-gray-600 dark:text-slate-200">
+                    نصيبه {formatDuration(p.baseMin)}
+                  </span>
+                  <Pill tone={p.dayNumbers.length === 0 ? "gray" : p.diffMin === 0 ? "green" : p.diffMin > 0 ? "amber" : "blue"}>
+                    {p.dayNumbers.length === 0
+                      ? "لم يظهر في الدوام الفعلي بعد"
+                      : `الفعلي ${formatDuration(p.actualTotalMin)} (${p.diffMin > 0 ? "+" : "−"}${formatDuration(Math.abs(p.diffMin))})`}
+                  </Pill>
                 </div>
               ))}
             </div>
