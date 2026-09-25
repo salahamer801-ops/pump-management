@@ -10,6 +10,7 @@ import type {
   ConflictStatus,
   DayEntry,
   DayIssueSeverity,
+  DayRosterMember,
   Debt,
   DebtStatus,
   DialaDay,
@@ -393,6 +394,169 @@ export function planEntriesFromSchedule(
       archived: false,
     };
   });
+}
+
+/* ------------------- أساسيو كل يوم (قوائم مستقلة لكل يوم) ----------------- */
+
+export interface RosterRow {
+  member: DayRosterMember;
+  personId: string;
+  person: Person | null;
+  name: string;
+  phone: string;
+  /** حصته في هذا اليوم بالدقائق */
+  shareMin: number;
+  order: number;
+  /** مساهم في المضخة (يُعرض كمرجع فقط — لا يشترط أن يكون) */
+  isShareholder: boolean;
+}
+
+/**
+ * قائمة أساسيي يوم واحد فقط — المستقلة عن كل يوم آخر.
+ * القاعدة: لا تُقرأ أي قائمة إلا بمعرّف يومها (`dayId`)، والحذف الناعم يُخفيها من يومها وحده.
+ */
+export function rosterRows(state: AppState, dayId: string): RosterRow[] {
+  return (state.roster ?? [])
+    .filter((r) => r.dayId === dayId && !r.archived)
+    .slice()
+    .sort((a, b) => a.order - b.order || (a.createdAt < b.createdAt ? -1 : 1))
+    .map((member) => {
+      const person = findPerson(state, member.personId);
+      return {
+        member,
+        personId: member.personId,
+        person,
+        name: person?.name ?? "—",
+        phone: person?.phone ?? "",
+        shareMin: member.shareMin ?? 0,
+        order: member.order ?? 0,
+        isShareholder: !!person && isShareholder(state, member.pumpId, member.personId),
+      };
+    });
+}
+
+/** مجموع حصص أساسيي اليوم بالدقائق */
+export function rosterTotalMin(state: AppState, dayId: string): number {
+  return rosterRows(state, dayId).reduce((sum, r) => sum + (r.shareMin || 0), 0);
+}
+
+/** هل هذا الشخص من أساسيي هذا اليوم؟ */
+export function isRosterMember(state: AppState, dayId: string, personId: string): boolean {
+  return (state.roster ?? []).some(
+    (r) => r.dayId === dayId && r.personId === personId && !r.archived
+  );
+}
+
+/**
+ * بناء صفوف اليوم من **أساسيي هذا اليوم** بالتسلسل من بداية تشغيل اليوم،
+ * بمدة كل شخص كما حُدِّدت. قائمة فارغة ⇒ لا صفوف تُبنى.
+ * لا يقرأ هذا التابع أي جدول عام في المضخة.
+ */
+export function planEntriesFromRoster(
+  state: AppState,
+  pump: Pump,
+  day: DialaDay
+): Omit<DayEntry, "dayId">[] {
+  const base = timeToMinutes(day.workStart);
+  let cursor = 0;
+  return rosterRows(state, day.id).map((row, index) => {
+    const share = row.shareMin > 0 ? row.shareMin : 0;
+    const shareholder = shareholderOfPerson(state, pump.id, row.personId);
+    const right = shareholder ? currentRight(state, shareholder.id) : null;
+    const start = base + cursor;
+    cursor += share;
+    return {
+      id: uid("en"),
+      pumpId: pump.id,
+      orderIndex: index,
+      personId: row.personId,
+      role: right
+        ? right.kind === "rent"
+          ? "tenant"
+          : "right_holder"
+        : shareholder
+          ? "shareholder"
+          : "guest",
+      shareholderId: shareholder?.id ?? null,
+      rightId: right?.id ?? null,
+      startTime: minutesToTime(start),
+      endTime: minutesToTime(start + share),
+      plannedMin: share,
+      actualPersonId: null,
+      usageId: null,
+      status: "planned",
+      postponeToDayId: null,
+      reason: "",
+      notes: "",
+      createdAt: new Date().toISOString(),
+      createdBy: "manager",
+      archived: false,
+    };
+  });
+}
+
+/** ملخص يوم واحد داخل الديالة: عدد أساسييه ومجموع ساعاتهم وأسماؤهم */
+export interface RosterDaySummary {
+  day: DialaDay;
+  dayNumber: number;
+  membersCount: number;
+  totalMin: number;
+  names: string[];
+}
+
+/** ملخص كل يوم في الديالة (عرض فقط) */
+export function rosterDaySummaries(state: AppState, roundId: string): RosterDaySummary[] {
+  return roundDays(state, roundId, true)
+    .slice()
+    .sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0))
+    .map((day) => {
+      const rows = rosterRows(state, day.id);
+      return {
+        day,
+        dayNumber: dayNumberInRound(state, day),
+        membersCount: rows.length,
+        totalMin: rows.reduce((sum, r) => sum + (r.shareMin || 0), 0),
+        names: rows.map((r) => r.name),
+      };
+    });
+}
+
+/** ملخص تداول الدورة: في أي أيام يظهر كل شخص ومجموع حصصه مقابل سهمه الأساسي */
+export interface RosterPersonSummary {
+  personId: string;
+  name: string;
+  dayNumbers: number[];
+  totalMin: number;
+  /** السهم الأساسي في المضخة (مرجعي — عرض وتحذير بلا منع) */
+  baseHoursMin: number;
+  diffMin: number;
+}
+
+export function rosterPersonSummaries(state: AppState, round: DialaRound): RosterPersonSummary[] {
+  const pumpId = round.pumpId;
+  const byPerson = new Map<string, RosterPersonSummary>();
+  for (const summary of rosterDaySummaries(state, round.id)) {
+    for (const row of rosterRows(state, summary.day.id)) {
+      const current = byPerson.get(row.personId) ?? {
+        personId: row.personId,
+        name: row.name,
+        dayNumbers: [],
+        totalMin: 0,
+        baseHoursMin: shareholderOfPerson(state, pumpId, row.personId)?.baseHoursMin ?? 0,
+        diffMin: 0,
+      };
+      if (!current.dayNumbers.includes(summary.dayNumber)) current.dayNumbers.push(summary.dayNumber);
+      current.totalMin += row.shareMin || 0;
+      byPerson.set(row.personId, current);
+    }
+  }
+  return [...byPerson.values()]
+    .map((p) => ({
+      ...p,
+      dayNumbers: p.dayNumbers.slice().sort((a, b) => a - b),
+      diffMin: p.totalMin - p.baseHoursMin,
+    }))
+    .sort((a, b) => b.totalMin - a.totalMin);
 }
 
 /* -------------------------- الاقتراحات والبحث (§11) -------------------- */

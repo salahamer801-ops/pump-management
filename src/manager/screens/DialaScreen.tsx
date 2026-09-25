@@ -26,6 +26,8 @@ import {
   pumpWindow,
   roundDates,
   roundDays,
+  rosterRows,
+  rosterPersonSummaries,
   scheduleRows,
   totalUnits,
 } from "../../domain/rules";
@@ -220,7 +222,7 @@ export default function DialaScreen({ onOpenDay }: { onOpenDay: (id: string | nu
         <h2 className="mb-2 text-sm font-extrabold text-gray-800 dark:text-white">دورة العمل</h2>
         <ol className="list-inside list-decimal space-y-1 text-[11px] text-gray-500 dark:text-slate-300">
           <li>حدّد يوم بداية الديالة وعدد أيامها — يُحسب تاريخ النهاية تلقائيًا</li>
-          <li>تُنشأ أيام الديالة جاهزة من الجدول الأساسي: اليوم الأول، الثاني… حتى آخر يوم</li>
+          <li>تُنشأ أيام الديالة بقوائم أساسيين فارغة — تضيف أساسيي كل يوم بنفسك، وكل يوم مستقل عن غيره</li>
           <li>لا يوجد يوم خارج الديالة — أي يوم تُنشئه من شاشة اليوم الفعلي ينتمي إلى ديالته</li>
           <li>بعد آخر يوم تنتهي الديالة، ويعود الدوران من جديد بديالة تالية من اليوم الأول</li>
           <li>افتح اليوم الفعلي وأضف الأشخاص وعدّل الترتيب بحرية</li>
@@ -334,6 +336,8 @@ function RoundCard({
           const date = addDaysISO(round.startDate, i);
           const day = state.days.find((d) => !d.archived && d.date === date) ?? null;
           const summary = day ? daySummary(state, day, pump) : null;
+          const roster = day ? rosterRows(state, day.id) : [];
+          const rosterMin = roster.reduce((s, r) => s + (r.shareMin || 0), 0);
           return (
             <button
               key={date}
@@ -342,8 +346,8 @@ function RoundCard({
                 day
                   ? `اليوم ${dayOrdinal(i + 1)} للديالة ${round.number} — ${isoToDisplay(date)} · ${statusLabel(day.status)}${
                       summary ? ` · ${summary.persons} شخص` : ""
-                    }`
-                  : `إنشاء اليوم ${dayOrdinal(i + 1)} للديالة ${round.number} — ${isoToDisplay(date)}`
+                    } · أساسيوه ${roster.length} (${formatDuration(rosterMin)})`
+                  : `إنشاء اليوم ${dayOrdinal(i + 1)} للديالة ${round.number} — ${isoToDisplay(date)} · قائمة أساسيين فارغة`
               }
               aria-label={`اليوم ${dayOrdinal(i + 1)} للديالة ${round.number}`}
               className={cx(
@@ -353,10 +357,51 @@ function RoundCard({
             >
               <span className="block">اليوم {dayOrdinal(i + 1)}</span>
               <span className="block text-[9px] font-normal opacity-70">{isoToShort(date)}</span>
+              <span className="block text-[9px] font-bold opacity-80" data-testid={`round-${round.number}-day-roster-${i + 1}`}>
+                {day ? `${roster.length} أساسي` : "فارغ"}
+              </span>
             </button>
           );
         })}
       </div>
+
+      {(() => {
+        const people = rosterPersonSummaries(state, round);
+        if (people.length === 0) {
+          return (
+            <p className="mt-2 rounded-2xl bg-gray-50 px-3 py-2 text-[10px] leading-relaxed text-gray-500 dark:bg-slate-700 dark:text-slate-300">
+              كل يوم في هذه الديالة يبدأ بقائمة أساسيين فارغة تخصّه وحده — افتح اليوم واضغط «إضافة إلى أساسيي هذا اليوم».
+            </p>
+          );
+        }
+        return (
+          <div className="mt-3">
+            <div className="mb-1 flex items-center gap-1.5 text-[11px] font-extrabold text-gray-700 dark:text-slate-200">
+              <ListOrdered size={13} className="text-emerald-600" /> تداول الدورة (عرض وتحذير فقط)
+            </div>
+            <div className="space-y-1">
+              {people.map((p) => (
+                <div
+                  key={p.personId}
+                  className="flex flex-wrap items-center gap-2 rounded-xl bg-gray-50 px-3 py-1.5 text-[10px] dark:bg-slate-700"
+                >
+                  <span className="min-w-0 flex-1 truncate font-extrabold text-gray-800 dark:text-white">{p.name}</span>
+                  <span className="text-gray-500 dark:text-slate-300">
+                    الأيام: {p.dayNumbers.map((n) => dayOrdinal(n)).join("، ")}
+                  </span>
+                  <span className="font-bold text-gray-600 dark:text-slate-200">{formatDuration(p.totalMin)}</span>
+                  {p.baseHoursMin > 0 ? (
+                    <Pill tone={p.diffMin === 0 ? "green" : p.diffMin > 0 ? "amber" : "gray"}>
+                      سهمه الأساسي {formatDuration(p.baseHoursMin)}
+                      {p.diffMin !== 0 ? ` (${p.diffMin > 0 ? "+" : "−"}${formatDuration(Math.abs(p.diffMin))})` : " · مطابق"}
+                    </Pill>
+                  ) : null}
+                </div>
+              ))}
+            </div>
+          </div>
+        );
+      })()}
 
       <div className="mt-2 flex flex-wrap gap-1.5">
         {round.archived ? (

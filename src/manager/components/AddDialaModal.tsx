@@ -156,7 +156,8 @@ export function AddDialaModal({
           </p>
         ) : (
           <p className="rounded-2xl bg-gray-50 px-3 py-2 text-[11px] leading-relaxed text-gray-500 dark:bg-slate-700 dark:text-slate-300">
-            سيُنشأ {freshCount} يوم جاهز من الجدول الأساسي — الديالة رقم {state.counters.round}
+            سيُنشأ {freshCount} يوم بقوائم أساسيين <b>فارغة</b> — تضيف أساسيي كل يوم بنفسك. الديالة رقم{" "}
+            {state.counters.round}
             {takenDates.length > 0 ? ` · ${takenDates.length} يوم مسجّل مسبقًا سيُترك كما هو` : ""}
           </p>
         )}

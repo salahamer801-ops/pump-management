@@ -19,6 +19,7 @@ import type {
   DialaDay,
   DialaRound,
   DayEntry,
+  DayRosterMember,
   DieselSettlement,
   FuelRecord,
   MatchStatus,
@@ -50,7 +51,9 @@ import {
   mergeConflicts,
   paymentMethodLabel,
   personBalance,
-  planEntriesFromSchedule,
+  personName,
+  planEntriesFromRoster,
+  rosterRows,
   roundOfDay,
   royaltyModeLabel,
   settlementPostings,
@@ -92,7 +95,28 @@ export type Action =
   | { type: "SAVE_ENTRY"; entry: DayEntry; isNew: boolean; correctionReason?: string; actor?: string }
   | { type: "SAVE_ENTRIES"; dayId: string; entries: DayEntry[]; correctionReason?: string; actor?: string }
   | { type: "MOVE_ENTRY"; id: string; dir: -1 | 1 }
-  | { type: "DERIVE_ENTRIES"; dayId: string; correctionReason?: string; actor?: string }
+  | {
+      type: "APPLY_ROSTER_TO_DAY";
+      dayId: string;
+      correctionReason?: string;
+      actor?: string;
+    }
+  | {
+      type: "SAVE_ROSTER_MEMBER";
+      dayId: string;
+      personId: string;
+      shareMin: number;
+      notes?: string;
+      actor?: string;
+    }
+  | { type: "MOVE_ROSTER_MEMBER"; dayId: string; id: string; dir: -1 | 1; actor?: string }
+  | {
+      type: "REMOVE_ROSTER_MEMBER";
+      id: string;
+      reason?: string;
+      actor?: string;
+    }
+  | { type: "COPY_ROSTER"; fromDayId: string; toDayId: string; actor?: string }
   | { type: "REMOVE_ENTRY"; id: string; reason?: string; actor?: string }
   | {
       type: "RECORD_USAGE";
@@ -554,14 +578,13 @@ function reducer(state: AppState, action: Action): AppState {
           action.day.capacityMin ||
           durationMin(action.day.workStart, action.day.workEnd),
       };
-      const entries = action.planFromSchedule
-        ? planEntriesFromSchedule(
-            state,
-            state.pump!,
-            action.day.workStart,
-            action.day.workEnd
-          ).map((e) => ({ ...e, dayId: action.day.id, id: uid("en") }) as DayEntry)
-        : action.entries.map((e) => ({ ...e, dayId: action.day.id }));
+      /* اليوم الجديد يُبنى من أساسيي هذا اليوم — وقائمته تبدأ فارغة، فلا صفوف تلقائية */
+      const entries =
+        action.planFromSchedule && state.pump
+          ? planEntriesFromRoster(state, state.pump, dayRecord).map(
+              (e) => ({ ...e, dayId: dayRecord.id }) as DayEntry
+            )
+          : action.entries.map((e) => ({ ...e, dayId: action.day.id }));
       const next = {
         ...state,
         days: [...state.days, dayRecord],
@@ -775,7 +798,6 @@ function reducer(state: AppState, action: Action): AppState {
       const fresh = action.dates.filter((date) => !busy.has(date));
       let number = state.counters.diala;
       const newDays: DialaDay[] = [];
-      const newEntries: DayEntry[] = [];
       for (const date of fresh) {
         const day: DialaDay = {
           id: uid("day"),
@@ -804,18 +826,13 @@ function reducer(state: AppState, action: Action): AppState {
         };
         newDays.push(day);
         number += 1;
-        newEntries.push(
-          ...planEntriesFromSchedule(state, pump, day.workStart, day.workEnd).map(
-            (e) => ({ ...e, dayId: day.id, id: uid("en") }) as DayEntry
-          )
-        );
+        /* لا يُملأ اليوم تلقائيًا: أساسيّوه يُضافون يدويًا لكل يوم على حدة */
       }
       const round: DialaRound = { ...action.round };
       const next = {
         ...state,
         rounds: [...state.rounds, round],
         days: [...state.days, ...newDays],
-        entries: [...state.entries, ...newEntries],
         counters: {
           diala: Math.max(number, state.counters.diala),
           round: Math.max(state.counters.round, round.number + 1),
@@ -1039,38 +1056,214 @@ function reducer(state: AppState, action: Action): AppState {
       });
     }
 
-    case "DERIVE_ENTRIES": {
+    /* ------------- أساسيو اليوم: قوائم مستقلة، كل يوم على حدة ------------- */
+    case "SAVE_ROSTER_MEMBER": {
+      const day = state.days.find((d) => d.id === action.dayId);
+      if (!day) return state;
+      const roster = state.roster ?? [];
+      const current = roster.filter((r) => r.dayId === action.dayId && !r.archived);
+      const existing = current.find((r) => r.personId === action.personId);
+      const at = new Date().toISOString();
+      const actor = action.actor ?? "manager";
+      const shareMin = Math.max(0, Math.round(action.shareMin));
+      const member: DayRosterMember = existing
+        ? { ...existing, shareMin, notes: action.notes ?? existing.notes }
+        : {
+            id: uid("rst"),
+            pumpId: day.pumpId,
+            dayId: action.dayId,
+            personId: action.personId,
+            shareMin,
+            order: current.length,
+            notes: action.notes ?? "",
+            archived: false,
+            createdAt: at,
+            createdBy: actor,
+          };
+      const next = {
+        ...state,
+        roster: existing ? roster.map((r) => (r.id === member.id ? member : r)) : [...roster, member],
+      };
+      const who = personName(state, action.personId);
+      return commit(state, next, {
+        action: existing ? "update" : "create",
+        entity: "roster",
+        entityId: member.id,
+        summary: existing
+          ? `تعديل حصة ${who} في يوم ${isoToShort(day.date)} إلى ${shareMin} دقيقة`
+          : `إضافة ${who} إلى أساسيي يوم ${isoToShort(day.date)} بحصة ${shareMin} دقيقة`,
+        before: existing ?? "",
+        after: member,
+        op: existing ? "update" : "create",
+        actor,
+      });
+    }
+
+    case "MOVE_ROSTER_MEMBER": {
+      const rows = rosterRows(state, action.dayId);
+      const index = rows.findIndex((r) => r.member.id === action.id);
+      const target = index + action.dir;
+      if (index < 0 || target < 0 || target >= rows.length) return state;
+      const orderOf = new Map(rows.map((r, i) => [r.member.id, i]));
+      orderOf.set(rows[index].member.id, target);
+      orderOf.set(rows[target].member.id, index);
+      const next = {
+        ...state,
+        roster: (state.roster ?? []).map((r) =>
+          orderOf.has(r.id) ? { ...r, order: orderOf.get(r.id)! } : r
+        ),
+      };
+      return commit(state, next, {
+        action: "update",
+        entity: "roster",
+        entityId: action.id,
+        summary: `${action.dir === -1 ? "تقديم" : "تأخير"} ${rows[index].name} داخل اليوم فقط`,
+        before: { order: index },
+        after: { order: target },
+        actor: action.actor,
+      });
+    }
+
+    case "REMOVE_ROSTER_MEMBER": {
+      const member = (state.roster ?? []).find((r) => r.id === action.id);
+      if (!member) return state;
+      const day = state.days.find((d) => d.id === member.dayId);
+      const at = new Date().toISOString();
+      /* حذف ناعم: يؤثر على قائمة هذا اليوم وحده — لا صف استخدام ولا يوم آخر يُمَسّ */
+      const next = {
+        ...state,
+        roster: (state.roster ?? []).map((r) =>
+          r.id === action.id
+            ? {
+                ...r,
+                archived: true,
+                deletedAt: at,
+                deletedBy: action.actor ?? "manager",
+                deletionReason: action.reason ?? "إزالة من أساسيي اليوم (حذف ناعم)",
+              }
+            : r
+        ),
+      };
+      return commit(state, next, {
+        action: "delete",
+        entity: "roster",
+        entityId: action.id,
+        summary: `إزالة ${personName(state, member.personId)} من أساسيي يوم ${day ? isoToShort(day.date) : ""} (بقية الأيام لا تتأثر)`,
+        before: member,
+        after: { ...member, archived: true },
+        reason: action.reason,
+        actor: action.actor,
+      });
+    }
+
+    case "COPY_ROSTER": {
+      const from = state.days.find((d) => d.id === action.fromDayId);
+      const to = state.days.find((d) => d.id === action.toDayId);
+      if (!from || !to || from.id === to.id) return state;
+      const roster = state.roster ?? [];
+      const source = rosterRows(state, from.id);
+      const current = roster.filter((r) => r.dayId === to.id && !r.archived);
+      const have = new Set(current.map((r) => r.personId));
+      const at = new Date().toISOString();
+      const added: DayRosterMember[] = source
+        .filter((row) => !have.has(row.personId))
+        .map((row, i) => ({
+          id: uid("rst"),
+          pumpId: to.pumpId,
+          dayId: to.id,
+          personId: row.personId,
+          shareMin: row.shareMin,
+          order: current.length + i,
+          notes: `منسوخ من يوم ${isoToShort(from.date)}`,
+          archived: false,
+          createdAt: at,
+          createdBy: action.actor ?? "manager",
+        }));
+      if (added.length === 0) return state;
+      const next = { ...state, roster: [...roster, ...added] };
+      return commit(state, next, {
+        action: "create",
+        entity: "roster",
+        entityId: to.id,
+        summary: `نسخ قائمة أساسيي يوم ${isoToShort(from.date)} إلى يوم ${isoToShort(to.date)} (${added.length} شخص)`,
+        after: added,
+        op: "create",
+        actor: action.actor,
+      });
+    }
+
+    case "APPLY_ROSTER_TO_DAY": {
       if (!state.pump) return state;
       const day = state.days.find((d) => d.id === action.dayId);
       if (!day) return state;
-      const derived = planEntriesFromSchedule(
-        state,
-        state.pump,
-        day.workStart,
-        day.workEnd
-      ).map((e) => ({ ...e, dayId: day.id }) as DayEntry);
+      const planned = planEntriesFromRoster(state, state.pump, day);
+      const at = new Date().toISOString();
+      const actor = action.actor ?? "manager";
+      const current = state.entries.filter((e) => e.dayId === day.id && !e.archived);
+      const byPerson = new Map<string, DayEntry>();
+      for (const e of current) if (!byPerson.has(e.personId)) byPerson.set(e.personId, e);
+
+      /** الصفوف التي لها استخدام مسجَّل لا تُؤرشف أبدًا — السجل محفوظ */
+      const hasUsage = (entryId: string) =>
+        state.usages.some((u) => u.entryId === entryId && u.status !== "void");
+
+      const kept = new Set<string>();
+      const rebuilt: DayEntry[] = planned.map((row, index) => {
+        const existing = byPerson.get(row.personId);
+        if (!existing) {
+          return { ...row, dayId: day.id, orderIndex: index } as DayEntry;
+        }
+        kept.add(existing.id);
+        return {
+          ...existing,
+          orderIndex: index,
+          startTime: row.startTime,
+          endTime: row.endTime,
+          plannedMin: row.plannedMin,
+          role: row.role,
+          shareholderId: row.shareholderId,
+          rightId: row.rightId,
+        };
+      });
+
+      const outdated = current.filter((e) => !kept.has(e.id));
+      const toArchive = outdated.filter((e) => !hasUsage(e.id)).map((e) => e.id);
+
       const next = {
         ...state,
-        entries: [...state.entries.filter((e) => e.dayId !== action.dayId), ...derived],
+        entries: [
+          ...state.entries.map((e) =>
+            toArchive.includes(e.id)
+              ? {
+                  ...e,
+                  archived: true,
+                  deletedAt: at,
+                  deletedBy: actor,
+                  deletionReason: action.correctionReason ?? "لم يعد من أساسيي هذا اليوم",
+                }
+              : e
+          ),
+          ...rebuilt.filter((e) => !state.entries.some((x) => x.id === e.id)),
+        ],
       };
       const corrections = withCorrection(
         state,
         day.id,
         "day",
         day.id,
-        "plan",
-        entriesOfDay(state, day.id).length,
-        derived.length,
-        action.correctionReason ?? "استرجاع الجدول الأساسي",
-        action.actor ?? "manager"
+        "roster",
+        current.length,
+        rebuilt.length,
+        action.correctionReason ?? "بناء ترتيب اليوم من أساسييه",
+        actor
       );
       return commit(state, { ...next, corrections }, {
         action: "update",
         entity: "day",
-        entityId: action.dayId,
-        summary: `استرجاع الجدول الأساسي في اليوم ${day.date} (${derived.length} شخص)`,
+        entityId: day.id,
+        summary: `بناء ترتيب يوم ${isoToShort(day.date)} من أساسييه (${rebuilt.length} شخص)`,
         reason: action.correctionReason,
-        actor: action.actor,
+        actor,
       });
     }
 
@@ -2299,7 +2492,18 @@ export interface AppActions {
     opts?: { correctionReason?: string; actor?: string }
   ) => void;
   moveEntry: (id: string, dir: -1 | 1) => void;
-  deriveEntries: (dayId: string, opts?: { correctionReason?: string; actor?: string }) => void;
+  /** بناء ترتيب اليوم من أساسيي هذا اليوم (لا يحذف أي صف فيه استخدام مسجّل) */
+  applyRosterToDay: (dayId: string, opts?: { correctionReason?: string; actor?: string }) => void;
+  /** أساسيو اليوم: إضافة/تعديل شخص في قائمة يوم واحد بحصته */
+  saveRosterMember: (
+    dayId: string,
+    personId: string,
+    shareMin: number,
+    opts?: { notes?: string; actor?: string }
+  ) => void;
+  moveRosterMember: (dayId: string, id: string, dir: -1 | 1, actor?: string) => void;
+  removeRosterMember: (id: string, opts?: { reason?: string; actor?: string }) => void;
+  copyRoster: (fromDayId: string, toDayId: string, actor?: string) => void;
   removeEntry: (id: string, opts?: { reason?: string; actor?: string }) => void;
   recordUsage: (input: {
     dayId: string;
@@ -2398,12 +2602,14 @@ function loadInitial(storageKey: string, adoptName: string): AppState {
   if (legacyGlobal) {
     const legacyName = (legacyGlobal.pump?.name ?? "").trim();
     if (!legacyGlobal.pump || !adoptName || legacyName === adoptName.trim()) {
+      /* يُمرَّر على نفس التصفية لضمان الحقول الحديثة (منها قوائم أساسيي الأيام) */
+      const normalized = normalizeState(legacyGlobal);
       try {
-        localStorage.setItem(storageKey, JSON.stringify(legacyGlobal));
+        localStorage.setItem(storageKey, JSON.stringify(normalized));
       } catch {
         /* ignore */
       }
-      return legacyGlobal;
+      return normalized;
     }
   }
   return emptyState();
@@ -2498,7 +2704,15 @@ export function AppProvider({
       saveEntries: (dayId, entries, opts) =>
         dispatch({ type: "SAVE_ENTRIES", dayId, entries, ...opts }),
       moveEntry: (id, dir) => dispatch({ type: "MOVE_ENTRY", id, dir }),
-      deriveEntries: (dayId, opts) => dispatch({ type: "DERIVE_ENTRIES", dayId, ...opts }),
+      applyRosterToDay: (dayId, opts) =>
+        dispatch({ type: "APPLY_ROSTER_TO_DAY", dayId, ...opts }),
+      saveRosterMember: (dayId, personId, shareMin, opts) =>
+        dispatch({ type: "SAVE_ROSTER_MEMBER", dayId, personId, shareMin, ...opts }),
+      moveRosterMember: (dayId, id, dir, actor) =>
+        dispatch({ type: "MOVE_ROSTER_MEMBER", dayId, id, dir, actor }),
+      removeRosterMember: (id, opts) => dispatch({ type: "REMOVE_ROSTER_MEMBER", id, ...opts }),
+      copyRoster: (fromDayId, toDayId, actor) =>
+        dispatch({ type: "COPY_ROSTER", fromDayId, toDayId, actor }),
       removeEntry: (id, opts) => dispatch({ type: "REMOVE_ENTRY", id, ...opts }),
       recordUsage: (input) => dispatch({ type: "RECORD_USAGE", ...input }),
       setUsageSettlement: (usageId, input) =>

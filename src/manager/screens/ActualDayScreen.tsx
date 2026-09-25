@@ -65,6 +65,7 @@ import {
   roundDates,
   roundForDate,
   roundOfDay,
+  isRosterMember,
   shareholderOfPerson,
   shortageAmountOf,
   stoppageMinutesInRange,
@@ -102,6 +103,7 @@ import {
 } from "../../components/ui";
 import PersonPicker, { roleLabel } from "../../components/PersonPicker";
 import ShareholdersPanel from "../components/ShareholdersPanel";
+import DayRosterPanel from "../components/DayRosterPanel";
 import { AddDialaButton } from "../components/AddDialaModal";
 import { DayStatusPill } from "./Dashboard";
 
@@ -233,7 +235,7 @@ export default function ActualDayScreen({
             title={`لا يوجد يوم مسجّل بتاريخ ${isoToDisplay(date)}`}
             description={`هذا التاريخ داخل ديالة ${dialaForDate.number} — وهو اليوم ${dayOrdinal(
               dialaDayIndex
-            )} للديالة. يُبنى اليوم من الجدول الأساسي ثم تعدّله بحرية كما حدث فعلًا.`}
+            )} للديالة. يُنشأ اليوم بقائمة أساسيين فارغة تخصّه وحده، ثم تضيف من تريد لكل يوم على حدة.`}
             action={
               <Button onClick={() => createDay(dialaForDate)}>
                 <CalendarPlus size={18} /> إنشاء اليوم {dayOrdinal(dialaDayIndex)} للديالة {dialaForDate.number}
@@ -429,6 +431,9 @@ export default function ActualDayScreen({
       {/* 1) المساهمون الأساسيون — سجل مرجعي ثابت لا يتغيّر بتغيّر اليوم */}
       <ShareholdersPanel dayId={day.id} actor={actorName} />
 
+      {/* 2) أساسيو هذا اليوم — قائمة مستقلة لكل يوم، تُبنى يدويًا وتبدأ فارغة */}
+      <DayRosterPanel day={day} actor={actorName} />
+
       {issues.length > 0 ? (
         <Card className="space-y-2 p-4">
           <div className="flex items-center gap-2">
@@ -466,7 +471,7 @@ export default function ActualDayScreen({
         </Card>
       ) : null}
 
-      {/* 2) المستخدمون الفعليون: الاسم والرقم والساعات والديزل والرواسة */}
+      {/* 3) المستخدمون الفعليون: الاسم والرقم والساعات والديزل والرواسة */}
       <Card className="p-4">
         <div className="mb-3 flex items-center gap-2">
           <Users size={16} className="text-emerald-600" />
@@ -489,6 +494,7 @@ export default function ActualDayScreen({
                 key={entry.id}
                 index={index}
                 entry={entry}
+                rosterMember={isRosterMember(state, day.id, entry.personId)}
                 isFirst={index === 0}
                 isLast={index === entries.length - 1}
                 onEdit={() => setEditEntry(entry)}
@@ -543,10 +549,10 @@ export default function ActualDayScreen({
           </Button>
           <Button
             variant="outline"
-            onClick={() => actions.deriveEntries(day.id, { correctionReason, actor: actorName })}
-            title="بناء ترتيب اليوم من الجدول الأساسي"
+            onClick={() => actions.applyRosterToDay(day.id, { correctionReason, actor: actorName })}
+            title="بناء ترتيب اليوم من أساسيي هذا اليوم"
           >
-            <RefreshCcw size={16} /> استرجاع الجدول الأساسي
+            <RefreshCcw size={16} /> بناء الترتيب من أساسيي اليوم
           </Button>
         </div>
         <p className="mt-2 text-[10px] leading-relaxed text-gray-400">
@@ -1138,6 +1144,7 @@ function SettlementChips({
 function EntryRow({
   index,
   entry,
+  rosterMember,
   isFirst,
   isLast,
   onEdit,
@@ -1149,6 +1156,8 @@ function EntryRow({
 }: {
   index: number;
   entry: DayEntry;
+  /** هل هذا الشخص من أساسيي هذا اليوم (القائمة المستقلة لهذا اليوم) */
+  rosterMember: boolean;
   isFirst: boolean;
   isLast: boolean;
   onEdit: () => void;
@@ -1191,6 +1200,11 @@ function EntryRow({
             <Pill tone={entry.role === "shareholder" ? "green" : entry.role === "tenant" ? "amber" : "gray"}>
               {roleLabel(entry.role)}
             </Pill>
+            {rosterMember ? (
+              <Pill tone="blue">أساسي في هذا اليوم</Pill>
+            ) : (
+              <Pill tone="gray">{entry.role === "guest" ? "ضيف — لهذا اليوم فقط" : "لهذا اليوم فقط"}</Pill>
+            )}
             {usage ? (
               <Pill tone="blue">
                 <CheckCircle2 size={11} /> {usageTypeLabel(usage.usageType)}

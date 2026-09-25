@@ -12,6 +12,7 @@ import type {
   DialaDay,
   DialaRound,
   DayEntry,
+  DayRosterMember,
   Debt,
   OtherChargeV1,
   Person,
@@ -34,6 +35,7 @@ export function emptyState(): AppState {
     rights: [],
     rounds: [],
     days: [],
+    roster: [],
     entries: [],
     usages: [],
     stoppages: [],
@@ -131,6 +133,57 @@ function linkDaysToRounds(input: AppState): Pick<AppState, "rounds" | "days" | "
 }
 
 /**
+ * ترحيل ناعم (مرة واحدة): يوم مسجَّل فيه صفوف فعلًا وقائمته فارغة/غير موجودة،
+ * تُقرأ صفوفه الحالية (شخص + مدته) لتصبح قائمته — فلا يبدو يوم مسجَّل وكأنه فارغ.
+ * القاعدة: لا حذف ولا تعديل لأي صف أو استخدام — قراءة فقط.
+ * تُدمج صفوف الشخص الواحد في سطر واحد بمجموع مدده.
+ */
+export function seedRosterFromEntries(
+  days: DialaDay[],
+  entries: DayEntry[],
+  existing: DayRosterMember[]
+): DayRosterMember[] {
+  const covered = new Set(existing.filter((r) => !r.archived).map((r) => r.dayId));
+  const out: DayRosterMember[] = [...existing];
+  for (const day of days.filter((d) => !d.archived)) {
+    if (covered.has(day.id)) continue;
+    const rows = entries
+      .filter((e) => e.dayId === day.id && !e.archived)
+      .sort((a, b) => a.orderIndex - b.orderIndex);
+    if (rows.length === 0) continue;
+    const byPerson = new Map<string, { shareMin: number; order: number }>();
+    rows.forEach((e, index) => {
+      const minutes =
+        e.plannedMin > 0 && !e.startTime && !e.endTime
+          ? e.plannedMin
+          : e.startTime && e.endTime
+            ? durationMin(e.startTime, e.endTime)
+            : e.plannedMin || 0;
+      const seen = byPerson.get(e.personId);
+      if (seen) seen.shareMin += minutes;
+      else byPerson.set(e.personId, { shareMin: minutes, order: index });
+    });
+    [...byPerson.entries()]
+      .sort((a, b) => a[1].order - b[1].order)
+      .forEach(([personId, info], order) => {
+        out.push({
+          id: uid("rst"),
+          pumpId: day.pumpId,
+          dayId: day.id,
+          personId,
+          shareMin: info.shareMin,
+          order,
+          notes: "قرئت من صفوف اليوم المسجَّلة",
+          archived: false,
+          createdAt: new Date().toISOString(),
+          createdBy: "system",
+        });
+      });
+  }
+  return out;
+}
+
+/**
  * تصفية الحالة المقروءة من التخزين: نضمن وجود الحقول الحديثة
  * (حالة استخدام السهم، حالة تسديد الديزل، نوع سداد الرواسة، الدفعات، الديون،
  * التعارضات، السلف، التصحيحات) وأن كل يوم فعلي داخل ديالة — دون حذف أي بيانات قديمة.
@@ -176,6 +229,18 @@ export function normalizeState(
         d.plannedCapacityMin ?? d.capacityMin ?? durationMin(d.workStart, d.workEnd),
     })),
     entries: (input.entries ?? []).map((e) => ({ ...e, archived: e.archived ?? false })),
+    /* قوائم أساسيي الأيام: تُقرأ كما هي، وإن لم تكن موجودة أصلًا (حالة قبل هذا التحديث)
+       تُبنى مرة واحدة من صفوف الأيام المسجَّلة — ولا تُعاد بناؤها بعدها أبدًا */
+    roster:
+      input.roster === undefined
+        ? seedRosterFromEntries(linked.days, input.entries ?? [], [])
+        : input.roster.map((r) => ({
+            ...r,
+            shareMin: r.shareMin ?? 0,
+            order: r.order ?? 0,
+            notes: r.notes ?? "",
+            archived: r.archived ?? false,
+          })),
     usages,
     stoppages: (input.stoppages ?? []).map((s) => ({ ...s, archived: s.archived ?? false })),
     operatorRecords: (input.operatorRecords ?? []).map((o) => {

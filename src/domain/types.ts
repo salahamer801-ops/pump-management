@@ -224,6 +224,28 @@ export interface DialaDay extends SoftDeletable {
 export type EntryRole = "shareholder" | "right_holder" | "tenant" | "guest" | "other";
 export type EntryStatus = "planned" | "done" | "cancelled" | "postponed";
 
+/**
+ * أساسيو يوم واحد من أيام الديالة — قائمة **مستقلة لكل يوم**.
+ * القاعدة: القائمة تخصّ اليوم بمعرّفه (`dayId`)، تُنشأ فارغة، والمسؤول يضيف
+ * من يشاء من الأشخاص المسجّلين ويحدّد لكل واحد حصته.
+ * حذف أي شخص هنا يؤثر على هذا اليوم وحده — ولا يمسّ أي يوم آخر.
+ */
+export interface DayRosterMember extends SoftDeletable {
+  id: ID;
+  pumpId: ID;
+  /** اليوم الذي تخصّه القائمة — المفتاح الذي يجعل القوائم مستقلة */
+  dayId: ID;
+  personId: ID;
+  /** حصته في اليوم بالدقائق (تُدخَل ساعات أو دقائق وتُخزَّن دقائق دائمًا) */
+  shareMin: number;
+  /** ترتيبه داخل اليوم */
+  order: number;
+  notes: string;
+  archived: boolean;
+  createdAt: string;
+  createdBy: string;
+}
+
 /** ترتيب اليوم الفعلي — لا يغيّر الجدول الأساسي */
 export interface DayEntry extends SoftDeletable {
   id: ID;
@@ -810,6 +832,8 @@ export interface AppState {
   rights: ShareRight[];
   rounds: DialaRound[];
   days: DialaDay[];
+  /** أساسيو كل يوم — قائمة مستقلة لكل يوم فعلي */
+  roster: DayRosterMember[];
   entries: DayEntry[];
   usages: ActualUsage[];
   stoppages: Stoppage[];
