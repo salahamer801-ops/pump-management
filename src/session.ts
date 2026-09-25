@@ -1,38 +1,33 @@
-export type SessionMode = "manager" | "shareholder";
+/**
+ * الجلسة الحقيقية تُدار على الخادم (رمز جلسة موقّع بمخزن على القاعدة).
+ * هنا فقط: أي مضخة يعمل عليها المسؤول الآن، وتنظيف الجلسة القديمة القديمة القائمة على الاسم.
+ */
 
-export interface Session {
-  mode: SessionMode;
-  name: string;
-}
+const ACTIVE_PUMP_KEY = "pump-org-active-pump-v1";
+const LEGACY_SESSION_KEY = "pump-org-session-v1";
 
-const SESSION_KEY = "pump-org-session-v1";
-
-export function loadSession(): Session | null {
+export function loadActivePumpId(): string | null {
   try {
-    const raw = localStorage.getItem(SESSION_KEY);
-    if (!raw) return null;
-    const parsed = JSON.parse(raw) as Session;
-    if (parsed && (parsed.mode === "manager" || parsed.mode === "shareholder")) {
-      return { mode: parsed.mode, name: parsed.name || "" };
-    }
+    return localStorage.getItem(ACTIVE_PUMP_KEY);
   } catch {
-    // ignore
-  }
-  return null;
-}
-
-export function saveSession(session: Session): void {
-  try {
-    localStorage.setItem(SESSION_KEY, JSON.stringify(session));
-  } catch {
-    // ignore
+    return null;
   }
 }
 
-export function clearSession(): void {
+export function saveActivePumpId(id: string | null): void {
   try {
-    localStorage.removeItem(SESSION_KEY);
+    if (!id) localStorage.removeItem(ACTIVE_PUMP_KEY);
+    else localStorage.setItem(ACTIVE_PUMP_KEY, id);
   } catch {
-    // ignore
+    /* ignore */
+  }
+}
+
+/** الجلسة القديمة كانت باسم فقط — لا تُعتبر هوية، وتُزال */
+export function clearLegacySession(): void {
+  try {
+    localStorage.removeItem(LEGACY_SESSION_KEY);
+  } catch {
+    /* ignore */
   }
 }

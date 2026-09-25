@@ -1,17 +1,24 @@
 import { useState } from "react";
-import { Droplets, Fuel, Sprout, Sun, Tractor } from "lucide-react";
+import { Droplets, Fuel, ShieldCheck, Sprout, Sun, Tractor } from "lucide-react";
 import { useApp } from "../store";
+import type { ManagedPump } from "../auth/types";
 import type { Currency, EnergyType, Pump } from "../domain/types";
 import { durationMin, uid } from "../domain/util";
 import { Button, Card, Field, NumberInput, Select, TextArea, TextInput, TimeInput } from "../components/ui";
 
 /** إنشاء المضخة — بيانات مرجعية تُستخدم في كل الحسابات لاحقًا (§20) */
-export default function PumpSetup({ onLogout }: { onLogout: () => void }) {
+export default function PumpSetup({
+  onLogout,
+  pump: serverPump,
+}: {
+  onLogout: () => void;
+  pump?: ManagedPump;
+}) {
   const { actions } = useApp();
   const [form, setForm] = useState({
-    name: "",
+    name: serverPump?.name ?? "",
     wells: "",
-    farm: "",
+    farm: serverPump?.location ?? "",
     engine: "",
     energyType: "diesel" as EnergyType,
     workStart: "06:00",
@@ -28,7 +35,7 @@ export default function PumpSetup({ onLogout }: { onLogout: () => void }) {
     operatorHourlyWage: 0,
     shareUnit: "حصة",
     currency: "YER" as Currency,
-    notes: "",
+    notes: serverPump?.description ?? "",
   });
 
   const set = <K extends keyof typeof form>(key: K, value: (typeof form)[K]) =>
@@ -78,6 +85,14 @@ export default function PumpSetup({ onLogout }: { onLogout: () => void }) {
         <p className="mt-1 text-sm text-gray-500 dark:text-slate-400">
           هذه البيانات مرجعية وتُستخدم في كل الحسابات — يمكن تعديلها لاحقًا دون تغيير الماضي.
         </p>
+        {serverPump ? (
+          <p className="mx-auto mt-3 inline-flex items-center gap-2 rounded-2xl bg-emerald-50 px-4 py-2 text-xs font-bold text-emerald-800 dark:bg-emerald-900/30 dark:text-emerald-300">
+            <ShieldCheck size={14} /> رقم تعريف المضخة:{" "}
+            <span className="font-mono" data-testid="pump-code">
+              {serverPump.code}
+            </span>
+          </p>
+        ) : null}
       </div>
 
       <div className="space-y-4">

@@ -2389,44 +2389,62 @@ interface AppContextValue {
 
 const AppContext = createContext<AppContextValue | null>(null);
 
-function loadInitial(): AppState {
-  try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    if (raw) {
-      const parsed = JSON.parse(raw) as Partial<AppState> & { version?: number };
-      if (parsed && (parsed.version === 3 || parsed.version === 2)) {
-        // الحقول الحديثة تُضاف، والأيام تُربط بديالاتها، ولا تُحذف أي بيانات قائمة
-        return normalizeState(parsed);
-      }
-      return normalizeState(migrateV1(parsed));
-    }
-    const legacy = localStorage.getItem(LEGACY_KEY);
-    if (legacy) {
-      const parsed = JSON.parse(legacy);
-      const migrated = normalizeState(migrateV1(parsed));
+function loadInitial(storageKey: string, adoptName: string): AppState {
+  const scoped = readRawState(storageKey);
+  if (scoped) return scoped;
+
+  /* ترحيل ناعم: بيانات كانت محفوظة قبل نظام الحسابات بالمفتاح العام — لا تُحذف ولا تُستبدل */
+  const legacyGlobal = readRawState(STORAGE_KEY) ?? readRawState(LEGACY_KEY);
+  if (legacyGlobal) {
+    const legacyName = (legacyGlobal.pump?.name ?? "").trim();
+    if (!legacyGlobal.pump || !adoptName || legacyName === adoptName.trim()) {
       try {
-        localStorage.setItem(STORAGE_KEY, JSON.stringify(migrated));
+        localStorage.setItem(storageKey, JSON.stringify(legacyGlobal));
       } catch {
         /* ignore */
       }
-      return migrated;
+      return legacyGlobal;
     }
-  } catch {
-    /* بيانات تالفة — نبدأ من حالة فارغة دون حذف أي شيء */
   }
   return emptyState();
 }
 
-export function AppProvider({ children }: { children: ReactNode }) {
-  const [state, dispatch] = useReducer(reducer, undefined, loadInitial);
+function readRawState(key: string): AppState | null {
+  try {
+    const raw = localStorage.getItem(key);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as Partial<AppState> & { version?: number };
+    if (parsed && (parsed.version === 3 || parsed.version === 2)) {
+      // الحقول الحديثة تُضاف، والأيام تُربط بديالاتها، ولا تُحذف أي بيانات قائمة
+      return normalizeState(parsed);
+    }
+    if (parsed && typeof parsed === "object") {
+      return normalizeState(migrateV1(parsed));
+    }
+  } catch {
+    /* بيانات تالفة — نبدأ من حالة فارغة دون حذف أي شيء */
+  }
+  return null;
+}
+
+export function AppProvider({
+  children,
+  storageKey = STORAGE_KEY,
+  adoptName = "",
+}: {
+  children: ReactNode;
+  storageKey?: string;
+  adoptName?: string;
+}) {
+  const [state, dispatch] = useReducer(reducer, undefined, () => loadInitial(storageKey, adoptName));
 
   useEffect(() => {
     try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+      localStorage.setItem(storageKey, JSON.stringify(state));
     } catch {
       /* ignore */
     }
-  }, [state]);
+  }, [state, storageKey]);
 
   useEffect(() => {
     const root = document.documentElement;

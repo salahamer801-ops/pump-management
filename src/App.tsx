@@ -1,37 +1,43 @@
-import { useState } from "react";
-import { AppProvider } from "./store";
-import { clearSession, loadSession, saveSession, type SessionMode } from "./session";
+import { useEffect } from "react";
+import { Droplets } from "lucide-react";
+import { AuthProvider, useAuth } from "./auth/AuthProvider";
 import LoginScreen from "./screens/LoginScreen";
-import ManagerApp from "./manager/ManagerApp";
+import ManagerShell from "./manager/ManagerShell";
 import ShareholderApp from "./shareholder/ShareholderApp";
+import { clearLegacySession } from "./session";
 
 export default function App() {
-  const [session, setSession] = useState(loadSession);
+  useEffect(() => {
+    /* الجلسة القديمة (الاسم فقط) لم تكن هوية — تُزال عند أول تشغيل */
+    clearLegacySession();
+  }, []);
 
-  if (!session) {
+  return (
+    <AuthProvider>
+      <Root />
+    </AuthProvider>
+  );
+}
+
+function Root() {
+  const { session, loading } = useAuth();
+
+  if (loading) {
     return (
-      <LoginScreen
-        onLogin={(mode: SessionMode, name: string) => {
-          const s = { mode, name };
-          saveSession(s);
-          setSession(s);
-        }}
-      />
+      <div className="flex min-h-screen items-center justify-center">
+        <div className="text-center">
+          <div className="mx-auto mb-3 flex h-16 w-16 animate-pulse items-center justify-center rounded-3xl bg-gradient-to-br from-emerald-500 to-emerald-700 text-white">
+            <Droplets size={28} />
+          </div>
+          <p className="text-sm font-bold text-gray-500">جارٍ التحقق من الحساب…</p>
+        </div>
+      </div>
     );
   }
 
-  const logout = () => {
-    clearSession();
-    setSession(null);
-  };
+  if (!session) return <LoginScreen />;
 
-  if (session.mode === "manager") {
-    return (
-      <AppProvider>
-        <ManagerApp onLogout={logout} userName={session.name} />
-      </AppProvider>
-    );
-  }
+  if (session.user.accountType === "manager") return <ManagerShell />;
 
-  return <ShareholderApp onLogout={logout} userName={session.name} />;
+  return <ShareholderApp />;
 }

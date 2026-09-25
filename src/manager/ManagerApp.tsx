@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   AlertTriangle,
   BarChart3,
@@ -11,9 +11,13 @@ import {
   Layers,
   Receipt,
   Settings2,
+  ShieldCheck,
   Users,
 } from "lucide-react";
 import { useApp } from "../store";
+import { useAuth } from "../auth/AuthProvider";
+import { listRequests } from "../auth/pumpApi";
+import type { ManagedPump } from "../auth/types";
 import { unreadNotifications } from "../domain/rules";
 import { formatClock } from "../domain/util";
 import { cx, Modal, Pill } from "../components/ui";
@@ -25,6 +29,7 @@ import DialaScreen from "./screens/DialaScreen";
 import FinanceScreen from "./screens/FinanceScreen";
 import ReportsScreen from "./screens/ReportsScreen";
 import SettingsScreen from "./screens/SettingsScreen";
+import PumpAccountsScreen from "./screens/PumpAccountsScreen";
 
 export type ManagerTab =
   | "home"
@@ -33,6 +38,7 @@ export type ManagerTab =
   | "diala"
   | "finance"
   | "reports"
+  | "accounts"
   | "settings";
 
 const NAV: { id: ManagerTab; label: string; icon: React.ReactNode }[] = [
@@ -42,20 +48,37 @@ const NAV: { id: ManagerTab; label: string; icon: React.ReactNode }[] = [
   { id: "diala", label: "الديالات", icon: <Layers size={20} /> },
   { id: "finance", label: "المالية", icon: <Receipt size={20} /> },
   { id: "reports", label: "التقارير", icon: <BarChart3 size={20} /> },
+  { id: "accounts", label: "الحسابات", icon: <ShieldCheck size={20} /> },
   { id: "settings", label: "الإعدادات", icon: <Settings2 size={20} /> },
 ];
 
 export default function ManagerApp({
-  onLogout,
-  userName,
+  pump,
+  onSwitchPump,
 }: {
-  onLogout: () => void;
-  userName: string;
+  pump: ManagedPump;
+  onSwitchPump: () => void;
 }) {
   const { state, actions } = useApp();
+  const { user, logout } = useAuth();
+  const userName = user?.name ?? "المسؤول";
   const [tab, setTab] = useState<ManagerTab>("home");
   const [selectedDayId, setSelectedDayId] = useState<string | null>(null);
   const [notifOpen, setNotifOpen] = useState(false);
+  const [pendingCount, setPendingCount] = useState(pump.pendingCount ?? 0);
+
+  const refreshPending = useMemo(
+    () => () => {
+      listRequests(pump.id)
+        .then((rows) => setPendingCount(rows.length))
+        .catch(() => undefined);
+    },
+    [pump.id]
+  );
+
+  useEffect(() => {
+    refreshPending();
+  }, [refreshPending]);
 
   const unread = useMemo(() => unreadNotifications(state).length, [state]);
   const pendingSync = useMemo(
@@ -63,7 +86,13 @@ export default function ManagerApp({
     [state]
   );
 
-  if (!state.pump) return <PumpSetup onLogout={onLogout} />;
+  if (!state.pump) return <PumpSetup pump={pump} onLogout={() => void logout()} />;
+
+  const openDay = (dayId: string | null) => {
+    setSelectedDayId(dayId);
+    setTab("day");
+  };
+
 
   const pump = state.pump;
   const openDay = (dayId: string | null) => {
@@ -84,7 +113,10 @@ export default function ManagerApp({
                 {pump.name}
               </div>
               <div className="text-xs text-gray-400">
-                لوحة المسؤول · {userName || "المسؤول"}
+                لوحة المسؤول · {userName || "المسؤول"} ·{" "}
+                <span className="font-mono font-bold text-emerald-600 dark:text-emerald-400">
+                  {pump.code}
+                </span>
               </div>
             </div>
           </div>
@@ -123,11 +155,14 @@ export default function ManagerApp({
         {tab === "diala" && <DialaScreen onOpenDay={openDay} />}
         {tab === "finance" && <FinanceScreen />}
         {tab === "reports" && <ReportsScreen />}
-        {tab === "settings" && <SettingsScreen onLogout={onLogout} userName={userName} />}
+        {tab === "accounts" && (
+          <PumpAccountsScreen pump={pump} onSwitchPump={onSwitchPump} onChanged={refreshPending} />
+        )}
+        {tab === "settings" && <SettingsScreen onLogout={() => void logout()} userName={userName} />}
       </main>
 
       <nav className="fixed inset-x-0 bottom-0 z-30 border-t border-gray-100 bg-white/95 backdrop-blur dark:border-slate-700 dark:bg-slate-900/95">
-        <div className="mx-auto grid max-w-2xl grid-cols-7">
+        <div className="mx-auto grid max-w-2xl grid-cols-8">
           {NAV.map((item) => (
             <button
               key={item.id}
@@ -143,11 +178,16 @@ export default function ManagerApp({
             >
               <span
                 className={cx(
-                  "flex h-8 w-10 items-center justify-center rounded-full transition",
+                  "relative flex h-8 w-10 items-center justify-center rounded-full transition",
                   tab === item.id && "bg-emerald-50 dark:bg-emerald-900/40"
                 )}
               >
                 {item.icon}
+                {item.id === "accounts" && pendingCount > 0 ? (
+                  <span className="absolute -top-0.5 right-1 flex h-4 min-w-4 items-center justify-center rounded-full bg-red-500 px-1 text-[9px] font-bold text-white">
+                    {pendingCount}
+                  </span>
+                ) : null}
               </span>
               {item.label}
             </button>
