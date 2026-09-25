@@ -1,6 +1,7 @@
 import { useMemo, useState } from "react";
 import { ChevronLeft, Fuel, Gauge, Plus, Settings2, Timer } from "lucide-react";
 import { useShareholder } from "../store";
+import MembershipPanel from "../MembershipPanel";
 import { activePumps } from "../selectors";
 import { endTimeFor, uid } from "../calc";
 import { formatHours, formatMoneyYER, formatTimeAmPm } from "../format";
@@ -99,6 +100,10 @@ export default function PumpsScreen() {
           <Plus size={18} /> إضافة مضخة
         </Button>
       </div>
+
+      <MembershipPanel />
+
+      <div className="pt-1 text-xs font-bold text-gray-400">مضخاتي في دفتري الشخصي</div>
 
       {pumps.length === 0 ? (
         <EmptyState

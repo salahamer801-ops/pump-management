@@ -53,7 +53,7 @@ const NAV: { id: ManagerTab; label: string; icon: React.ReactNode }[] = [
 ];
 
 export default function ManagerApp({
-  pump,
+  pump: managedPump,
   onSwitchPump,
 }: {
   pump: ManagedPump;
@@ -65,15 +65,15 @@ export default function ManagerApp({
   const [tab, setTab] = useState<ManagerTab>("home");
   const [selectedDayId, setSelectedDayId] = useState<string | null>(null);
   const [notifOpen, setNotifOpen] = useState(false);
-  const [pendingCount, setPendingCount] = useState(pump.pendingCount ?? 0);
+  const [pendingCount, setPendingCount] = useState(managedPump.pendingCount ?? 0);
 
   const refreshPending = useMemo(
     () => () => {
-      listRequests(pump.id)
+      listRequests(managedPump.id)
         .then((rows) => setPendingCount(rows.length))
         .catch(() => undefined);
     },
-    [pump.id]
+    [managedPump.id]
   );
 
   useEffect(() => {
@@ -86,14 +86,9 @@ export default function ManagerApp({
     [state]
   );
 
-  if (!state.pump) return <PumpSetup pump={pump} onLogout={() => void logout()} />;
+  if (!state.pump) return <PumpSetup pump={managedPump} onLogout={() => void logout()} />;
 
-  const openDay = (dayId: string | null) => {
-    setSelectedDayId(dayId);
-    setTab("day");
-  };
-
-
+  /* بيانات التشغيل محليًا، ورقم التعريف الثابت (Pump Code) من الخادم */
   const pump = state.pump;
   const openDay = (dayId: string | null) => {
     setSelectedDayId(dayId);
@@ -115,7 +110,7 @@ export default function ManagerApp({
               <div className="text-xs text-gray-400">
                 لوحة المسؤول · {userName || "المسؤول"} ·{" "}
                 <span className="font-mono font-bold text-emerald-600 dark:text-emerald-400">
-                  {pump.code}
+                  {managedPump.code}
                 </span>
               </div>
             </div>
@@ -156,7 +151,11 @@ export default function ManagerApp({
         {tab === "finance" && <FinanceScreen />}
         {tab === "reports" && <ReportsScreen />}
         {tab === "accounts" && (
-          <PumpAccountsScreen pump={pump} onSwitchPump={onSwitchPump} onChanged={refreshPending} />
+          <PumpAccountsScreen
+            pump={managedPump}
+            onSwitchPump={onSwitchPump}
+            onChanged={refreshPending}
+          />
         )}
         {tab === "settings" && <SettingsScreen onLogout={() => void logout()} userName={userName} />}
       </main>

@@ -20,7 +20,7 @@ export default function App() {
 }
 
 function Root() {
-  const { session, loading } = useAuth();
+  const { session, loading, logout } = useAuth();
 
   if (loading) {
     return (
@@ -39,5 +39,5 @@ function Root() {
 
   if (session.user.accountType === "manager") return <ManagerShell />;
 
-  return <ShareholderApp />;
+  return <ShareholderApp userName={session.user.name} onLogout={() => void logout()} />;
 }

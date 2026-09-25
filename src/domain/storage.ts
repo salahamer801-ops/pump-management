@@ -104,8 +104,28 @@ export function appendPersonalRecord(
 
 /**
  * ارتباط الحساب بالشخص صار بموافقة المسؤول على الخادم (§21، §34) —
- * لم يبقَ ارتباط ذاتي محلي. هذه الدوال تُبقى للتنظيف فقط.
+ * لم يبقَ ارتباط ذاتي محلي يمنح صلاحية.
+ *
+ * الرمز المحلي هنا ليس صلاحية: هو فقط «أيّ شخص في بيانات هذا الجهاز أستعرض سجله»،
+ * ويُستخدم عندما لا توجد عضوية معتمدة من الخادم (قراءة فقط، لا يمنح أي وصول لبيانات غيرك).
  */
+export function readUserLink(): string | null {
+  try {
+    return localStorage.getItem(USER_LINK_KEY);
+  } catch {
+    return null;
+  }
+}
+
+export function saveUserLink(personId: string | null): void {
+  try {
+    if (!personId) localStorage.removeItem(USER_LINK_KEY);
+    else localStorage.setItem(USER_LINK_KEY, personId);
+  } catch {
+    /* ignore */
+  }
+}
+
 export function clearLegacyUserLink(): void {
   try {
     localStorage.removeItem(USER_LINK_KEY);

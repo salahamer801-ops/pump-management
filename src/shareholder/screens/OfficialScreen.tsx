@@ -11,6 +11,7 @@ import {
   UserRound,
 } from "lucide-react";
 import { useShareholder } from "../store";
+import { useAuth } from "../../auth/AuthProvider";
 import type { ShareholderTurn } from "../types";
 import type { AppState, Person, PersonalRecord } from "../../domain/types";
 import { appendPersonalRecord, readManagerState, readUserLink, saveUserLink } from "../../domain/storage";
@@ -24,8 +25,17 @@ import { Button, Card, Field, Modal, NumberInput, Pill, StatCard, TextArea, Text
  */
 export default function OfficialScreen() {
   const { actions } = useShareholder();
+  const { session } = useAuth();
   const [manager, setManager] = useState<AppState | null>(() => readManagerState());
-  const [personId, setPersonId] = useState<string | null>(() => readUserLink());
+
+  /* ارتباط الحساب بالشخص يأتي من موافقة المسؤول على الخادم (§21، §34) */
+  const approvedLink = useMemo(
+    () => (session?.memberships ?? []).find((m) => m.status === "approved" && m.personId) ?? null,
+    [session]
+  );
+  const [localPersonId, setLocalPersonId] = useState<string | null>(() => readUserLink());
+  const personId = approvedLink?.personId ?? localPersonId;
+  const setPersonId = setLocalPersonId;
   const [linkOpen, setLinkOpen] = useState(false);
   const [query, setQuery] = useState("");
   const [recordOpen, setRecordOpen] = useState(false);
@@ -107,12 +117,18 @@ export default function OfficialScreen() {
         <div className="flex items-center gap-2">
           <Link2 size={16} className="text-emerald-600" />
           <h2 className="text-sm font-extrabold text-gray-800 dark:text-white">ارتباطي بالمضخة</h2>
-          <button
-            onClick={() => setLinkOpen(true)}
-            className="mr-auto rounded-xl bg-emerald-50 px-3 py-1.5 text-[11px] font-bold text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300"
-          >
-            {person ? "تغيير" : "من أنا؟"}
-          </button>
+          {approvedLink ? (
+            <Pill tone="green" className="mr-auto">
+              <BadgeCheck size={12} /> معتمد من المسؤول
+            </Pill>
+          ) : (
+            <button
+              onClick={() => setLinkOpen(true)}
+              className="mr-auto rounded-xl bg-emerald-50 px-3 py-1.5 text-[11px] font-bold text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300"
+            >
+              {person ? "تغيير" : "من أنا؟"}
+            </button>
+          )}
         </div>
         {person ? (
           <div className="mt-2 space-y-1">
