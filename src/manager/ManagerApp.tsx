@@ -58,12 +58,9 @@ const NAV: { id: ManagerTab; label: string; icon: React.ReactNode }[] = [
 export default function ManagerApp({
   pump: managedPump,
   onSwitchPump,
-  offline = false,
 }: {
   pump: ManagedPump;
   onSwitchPump: () => void;
-  /** وضع تجريبي محلي: لا نداءات للخادم (طلبات الربط والأعضاء والسجل) */
-  offline?: boolean;
 }) {
   const { state, actions, syncState } = useApp();
   const { user, logout } = useAuth();
@@ -75,20 +72,18 @@ export default function ManagerApp({
 
   const refreshPending = useMemo(
     () => () => {
-      if (offline) return;
       listRequests(managedPump.id)
         .then((rows) => setPendingCount(rows.length))
         .catch(() => undefined);
     },
-    [managedPump.id, offline]
+    [managedPump.id]
   );
 
   useEffect(() => {
     refreshPending();
   }, [refreshPending]);
 
-  /** في الوضع التجريبي المحلي تُخفى شاشة «الحسابات» لأنها تعمل على الخادم */
-  const navItems = useMemo(() => (offline ? NAV.filter((n) => n.id !== "accounts") : NAV), [offline]);
+  const navItems = NAV;
 
   const unread = useMemo(() => unreadNotifications(state).length, [state]);
   const pendingSync = useMemo(

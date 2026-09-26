@@ -16,7 +16,7 @@ import {
   roundOfDay,
   type BaseRosterRow,
 } from "../domain/rules";
-import { localManagerStates, readManagerState } from "../domain/storage";
+import { readManagerState } from "../domain/storage";
 import { todayISO } from "../domain/util";
 
 export interface MyTurn {
@@ -29,8 +29,6 @@ export interface PumpMeta {
   pumpCode: string;
   pumpName: string;
   managerName: string | null;
-  /** مضخة محفوظة على هذا الجهاز بلا عضوية معتمدة من الخادم */
-  localOnly?: boolean;
 }
 
 export interface LinkedPumpView extends PumpMeta {
@@ -211,30 +209,6 @@ export function viewFromState(
     todayTurn,
     lastTurn,
   };
-}
-
-/** مضخات الوضع المحلي: سجلات محفوظة على هذا الجهاز دون عضوية معتمدة */
-export function localPumpViews(personId: string | null, excludeIds: string[] = []): LinkedPumpView[] {
-  const skip = new Set(excludeIds);
-  const out: LinkedPumpView[] = [];
-  for (const st of localManagerStates()) {
-    const pump = st.pump;
-    if (!pump || skip.has(pump.id)) continue;
-    out.push(
-      viewFromState(
-        {
-          pumpId: pump.id,
-          pumpCode: pump.pumpCode ?? "—",
-          pumpName: pump.name,
-          managerName: null,
-          localOnly: true,
-        },
-        st,
-        personId
-      )
-    );
-  }
-  return out;
 }
 
 /** كل المضخات التي وافق المسؤول على ارتباطي بها */

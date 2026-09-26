@@ -70,7 +70,8 @@ export function readManagerState(pumpId?: string | null): AppState | null {
  */
 /**
  * كل سجلات المضخات المحفوظة على هذا الجهاز (بلا تكرار).
- * تُستخدم لعرض مضخات الوضع المحلي في تطبيق المستخدم — قراءة فقط.
+ * لم يبقَ للوضع المحلي مدخل في الواجهة، وهذه الدالة باقية لأجل مسار واحد فقط:
+ * استيراد بيانات جهاز قديمة إلى الخادم إن طلبت ذلك لاحقًا.
  */
 export function localManagerStates(): AppState[] {
   const seen = new Set<string>();

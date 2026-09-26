@@ -25,7 +25,6 @@ import { formatDayDate, formatHours, formatLiters, formatMoneyYER, gregorianToda
 import { Button, Card, EmptyState, Pill, cx } from "../../components/ui";
 import {
   linkedPumpViews,
-  localPumpViews,
   nearestTurnAcross,
   type LinkedPumpView,
 } from "../pumpView";
@@ -65,17 +64,9 @@ export default function HomeScreen({ onGoTo }: Props) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [approvedKey]);
 
-  /**
-   * بيانات المضخات المرتبطة — قراءة فقط من سجل المسؤول.
-   * مضخات العضوية المعتمدة من الخادم + مضخات محفوظة على هذا الجهاز (وضع محلي).
-   */
+  /** بيانات المضخات المرتبطة — قراءة فقط من سجل المسؤول (العضوية المعتمدة من الخادم) */
   const views = useMemo(() => {
-    const linked = linkedPumpViews(memberships, localPersonId);
-    const locals = localPumpViews(
-      localPersonId,
-      linked.map((v) => v.pumpId)
-    );
-    return [...linked, ...locals];
+    return linkedPumpViews(memberships, localPersonId);
     // officialTick: يُعاد بناء العرض بعد وصول البيانات الرسمية من الخادم
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [memberships, localPersonId, officialTick]);
@@ -445,7 +436,6 @@ function PumpCard({ view, onOpenOfficial }: { view: LinkedPumpView; onOpenOffici
               {view.pumpCode}
             </span>
             {view.managerName ? <span>· المسؤول: {view.managerName}</span> : null}
-            {view.localOnly ? <span>· على هذا الجهاز</span> : null}
           </div>
         </div>
         <Pill tone={view.roundStatus === "inside" ? "green" : view.roundStatus === "after" ? "gray" : "amber"}>

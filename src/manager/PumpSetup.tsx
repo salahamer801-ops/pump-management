@@ -1,10 +1,11 @@
 import { useState } from "react";
 import { Droplets, Fuel, ShieldCheck, Sprout, Sun, Tractor } from "lucide-react";
 import { useApp } from "../store";
+import { useAuth } from "../auth/AuthProvider";
 import type { ManagedPump } from "../auth/types";
 import type { Currency, EnergyType, Pump } from "../domain/types";
 import { durationMin } from "../domain/util";
-import { generateId, generatePumpCode, getSession } from "../lib/auth";
+import { generateId, generatePumpCode } from "../lib/ids";
 import { Button, Card, Field, NumberInput, Select, TextArea, TextInput, TimeInput } from "../components/ui";
 
 /** إنشاء المضخة — بيانات مرجعية تُستخدم في كل الحسابات لاحقًا (§20) */
@@ -16,6 +17,7 @@ export default function PumpSetup({
   pump?: ManagedPump;
 }) {
   const { actions } = useApp();
+  const { user } = useAuth();
   const [form, setForm] = useState({
     name: serverPump?.name ?? "",
     wells: "",
@@ -44,13 +46,12 @@ export default function PumpSetup({
 
   const save = () => {
     if (!form.name.trim()) return;
-    /* حساب المسؤول الحالي: من الخادم إن وُجدت مضخة مسجَّلة، وإلا من الجلسة المحلية */
-    const localSession = getSession();
+    /* حساب المسؤول الحالي: حساب الخادم (الجلسة) — لا يوجد وضع محلي */
     const pump: Pump = {
       id: generateId(),
       /* الرقم الثابت من الخادم إن كانت المضخة مسجَّلة هناك، وإلا رقم محلي جديد */
       pumpCode: serverPump?.pumpCode || generatePumpCode(),
-      managerId: serverPump?.managerId || localSession?.userId || "",
+      managerId: serverPump?.managerId || user?.id || "",
       name: form.name.trim(),
       wells: form.wells,
       farm: form.farm,
