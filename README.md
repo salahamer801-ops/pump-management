@@ -109,13 +109,17 @@ DATABASE_URL="postgresql://..." PORT=3001 node src/index.js
 
 عند الإقلاع ينشئ الخادم الجداول الناقصة تلقائيًا (`IF NOT EXISTS`) — **لا يُحذف أي جدول أو عمود ولا تُفقد بيانات**، ثم يصبح جاهزًا على `/api`.
 
-**متغيرات البيئة:** `DATABASE_URL` (مطلوب) و`PORT` (اختياري، الافتراضي 3001). لا تُكتب أي أسرار في الكود أو في المستودع.
+**متغيرات البيئة:** `DATABASE_URL` (مطلوب) و`PORT` (اختياري، الافتراضي 3001). و`UPSTREAM_API_BASE` (اختياري): عند ضبطه بعنوان خادم الـAPI المنشور خارجيًا (مثل Railway) تُمرَّر كل طلبات `/api` إليه من الخادم — فتبقى الواجهة على مسار نسبي بلا عنوان مكتوب فيها وبلا حاجة إلى CORS. لا تُكتب أي أسرار في الكود أو في المستودع.
 
 **فحوصات سريعة:**
 
 ```bash
 npm run verify                          # فحص منطق الحسابات (بلا خادم)
 node scripts/verify-phase2-api.mjs      # فحص المرحلة الثانية (يحتاج الخادم يعمل)
+node scripts/verify-persistence.mjs seed    # بيانات استمرارية · ثم verify بعد إعادة التشغيل
+node scripts/live-minitest.mjs          # اختبار إنتاجي مصغّر: تدقيق القاعدة + الـAPI + الصلاحيات + بيانات اختبار تُحذف في النهاية
+node scripts/live-minitest.mjs --keep        # نفس الاختبار مع إبقاء بياناته للمعاينة
+node scripts/live-minitest.mjs --cleanup-only # حذف بقايا بيانات الاختبار بعد أي انقطاع
 curl http://localhost:3001/api/health   # {"ok":true,"service":"pump-api"}
 ```
 

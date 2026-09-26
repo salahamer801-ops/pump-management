@@ -4,6 +4,8 @@ dist
 *.local
 .attachments/
 .env
+.env.*
 .env.mythex
+!.env.example
 .mythex/
 public/icons/

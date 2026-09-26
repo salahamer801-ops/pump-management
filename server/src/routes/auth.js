@@ -352,12 +352,17 @@ authRouter.post(
       source: "auth_screen",
       metadata: { delivery: "manual", phone: maskPhone(cleanPhone) },
     });
+    /* في الإنتاج يمكن منع إعادة الرمز في الرد (RESET_CODE_IN_RESPONSE=0) فيُسلَّم
+     * الرمز عبر مسؤول النظام. الافتراضي يبقي السلوك الحالي كما هو. */
+    const exposeCode = String(process.env.RESET_CODE_IN_RESPONSE ?? "1") !== "0";
     res.json({
       ok: true,
       delivery: "manual",
-      code,
+      code: exposeCode ? code : "",
       expiresInMinutes: 15,
-      warning: "لا توجد خدمة رسائل SMS مربوطة بعد: اكتب الرمز هنا ثم حدّد كلمة مرور جديدة.",
+      warning: exposeCode
+        ? "لا توجد خدمة رسائل SMS مربوطة بعد: اكتب الرمز هنا ثم حدّد كلمة مرور جديدة."
+        : "لا تُعاد رموز الاستعادة عبر الشبكة: اطلب الرمز من مسؤول النظام ثم اكتبه هنا.",
     });
   })
 );

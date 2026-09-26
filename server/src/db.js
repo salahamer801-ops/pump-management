@@ -10,11 +10,26 @@ if (!process.env.DATABASE_URL) {
   console.error("[db] DATABASE_URL غير موجود في بيئة التشغيل");
 }
 
+/* SSL لقاعدة البيانات المُستضافة:
+ * الافتراضي هو ما في DATABASE_URL نفسه (sslmode) — بلا تغيير لأي سلوك قائم.
+ * ويمكن ضبطه صريحًا عبر DATABASE_SSL: "require" لخادم بشهادة يديرها المزوّد،
+ * "verify-full" للتحقق الكامل، "disable" للاتصال المحلي بلا SSL. */
+const sslMode = String(process.env.DATABASE_SSL || "").trim().toLowerCase();
+const ssl =
+  sslMode === "disable" || sslMode === "off" || sslMode === "false"
+    ? false
+    : sslMode === "verify-full" || sslMode === "verify"
+      ? { rejectUnauthorized: true }
+      : sslMode
+        ? { rejectUnauthorized: false }
+        : undefined;
+
 export const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
   max: 5,
   idleTimeoutMillis: 10_000,
   connectionTimeoutMillis: 15_000,
+  ...(ssl === undefined ? {} : { ssl }),
 });
 
 // قاعدة البيانات قد تكون نائمة (تُوقَظ عند أول طلب) — لا نُسقط العملية بسبب خطأ اتصال
