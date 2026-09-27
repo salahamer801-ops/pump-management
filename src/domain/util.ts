@@ -137,6 +137,16 @@ export function isoToShort(iso: string): string {
   }
 }
 
+/** تاريخ مختصر بلا سنة (للخانات الصغيرة): 26 سبتمبر */
+export function isoToDayMonth(iso: string): string {
+  if (!iso) return "—";
+  try {
+    return parseISODate(iso).toLocaleDateString("ar", { day: "numeric", month: "short" });
+  } catch {
+    return iso;
+  }
+}
+
 export function isoToWeekday(iso: string): string {
   if (!iso) return "—";
   try {

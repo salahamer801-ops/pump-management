@@ -77,6 +77,7 @@ import {
   durationMin,
   formatClock,
   formatDuration,
+  isoToDayMonth,
   isoToDisplay,
   isoToShort,
   isOvernight,
@@ -232,7 +233,12 @@ export default function ActualDayScreen({
   if (!day) {
     return (
       <div className="space-y-4">
-        <DaySelector date={date} onChange={changeDate} />
+        <DaySelector
+          date={date}
+          onChange={changeDate}
+          dialaNumber={dialaForDate?.number ?? null}
+          dayIndex={dialaDayIndex}
+        />
         <DialaStrip date={date} onOpenDay={onChangeDay} />
 
         {dialaForDate ? (
@@ -269,7 +275,12 @@ export default function ActualDayScreen({
 
   return (
     <div className="space-y-4">
-      <DaySelector date={date} onChange={changeDate} />
+      <DaySelector
+        date={date}
+        onChange={changeDate}
+        dialaNumber={dialaForDate?.number ?? null}
+        dayIndex={dialaDayIndex}
+      />
       <DialaStrip date={date} dayId={day.id} onOpenDay={onChangeDay} />
 
       <Card className="p-4">
@@ -844,38 +855,97 @@ function Row({
   );
 }
 
-function DaySelector({ date, onChange }: { date: string; onChange: (d: string) => void }) {
+/**
+ * بطاقة التاريخ: ثلاث بطاقات صغيرة داخل بطاقة واحدة —
+ * اليمين: اليوم السابق بتاريخه · الوسط: يوم الديالة والتاريخ (اضغطه للتقويم) · الشمال: اليوم التالي بتاريخه.
+ */
+function DaySelector({
+  date,
+  onChange,
+  dialaNumber,
+  dayIndex,
+}: {
+  date: string;
+  onChange: (d: string) => void;
+  /** رقم الديالة التي يقع فيها التاريخ */
+  dialaNumber?: number | null;
+  /** ترتيب اليوم داخل ديالته (1 = اليوم الأول) */
+  dayIndex?: number;
+}) {
+  const previous = addDaysISO(date, -1);
+  const next = addDaysISO(date, 1);
+
   return (
-    <Card className="flex items-center gap-2 p-3">
-      <button
-        onClick={() => onChange(addDaysISO(date, -1))}
-        className="rounded-xl bg-gray-100 p-2 text-gray-600 dark:bg-slate-700 dark:text-slate-200"
-        aria-label="اليوم السابق"
-      >
-        <ChevronRight size={16} />
-      </button>
-      <div className="flex-1">
-        <input
-          type="date"
-          value={date}
-          onChange={(e) => onChange(e.target.value)}
-          className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-center text-xs font-bold text-gray-700 dark:border-slate-600 dark:bg-slate-800 dark:text-white"
-          aria-label="تاريخ اليوم الفعلي"
-        />
+    <Card className="p-2.5">
+      <div className="grid grid-cols-[1fr_1.2fr_1fr] gap-2">
+        {/* اليمين — اليوم السابق */}
+        <button
+          type="button"
+          onClick={() => onChange(previous)}
+          aria-label="اليوم السابق"
+          className="flex flex-col items-center justify-center gap-0.5 rounded-2xl border border-gray-100 bg-gray-50 px-1 py-2.5 text-gray-500 transition hover:border-emerald-200 hover:text-emerald-700 active:scale-[0.98] dark:border-slate-700 dark:bg-slate-700/60 dark:text-slate-300"
+        >
+          <span className="flex items-center gap-0.5 text-[10px] font-bold">
+            <ChevronRight size={13} /> السابق
+          </span>
+          <span className="text-[11px] font-extrabold text-gray-700 dark:text-slate-100" dir="ltr">
+            {isoToDayMonth(previous)}
+          </span>
+        </button>
+
+        {/* الوسط — يوم الديالة (الضغط يفتح التقويم) */}
+        <label className="relative flex cursor-pointer flex-col items-center justify-center gap-0.5 rounded-2xl border border-emerald-200 bg-emerald-50 px-2 py-2.5 text-center transition hover:border-emerald-300 dark:border-emerald-800 dark:bg-emerald-900/30">
+          <span className="text-[10px] font-bold text-emerald-700/80 dark:text-emerald-300/80">
+            يوم الديالة
+          </span>
+          <span className="text-base font-black leading-tight text-emerald-800 dark:text-emerald-200">
+            {dayIndex ? dayOrdinal(dayIndex) : "—"}
+          </span>
+          <span className="text-[10px] font-bold text-emerald-700/80 dark:text-emerald-300/80">
+            {dialaNumber ? `الديالة ${dialaNumber}` : "بلا ديالة"}
+          </span>
+          <span className="mt-0.5 flex items-center gap-0.5 text-[9px] font-bold text-emerald-600/80 dark:text-emerald-300/70">
+            <CalendarPlus size={10} /> لتغيير التاريخ
+          </span>
+          <input
+            type="date"
+            value={date}
+            onChange={(e) => onChange(e.target.value)}
+            aria-label="تاريخ اليوم الفعلي"
+            data-testid="day-date-input"
+            className="absolute inset-0 h-full w-full cursor-pointer opacity-0"
+          />
+        </label>
+
+        {/* الشمال — اليوم التالي */}
+        <button
+          type="button"
+          onClick={() => onChange(next)}
+          aria-label="اليوم التالي"
+          className="flex flex-col items-center justify-center gap-0.5 rounded-2xl border border-gray-100 bg-gray-50 px-1 py-2.5 text-gray-500 transition hover:border-emerald-200 hover:text-emerald-700 active:scale-[0.98] dark:border-slate-700 dark:bg-slate-700/60 dark:text-slate-300"
+        >
+          <span className="flex items-center gap-0.5 text-[10px] font-bold">
+            التالي <ChevronLeft size={13} />
+          </span>
+          <span className="text-[11px] font-extrabold text-gray-700 dark:text-slate-100" dir="ltr">
+            {isoToDayMonth(next)}
+          </span>
+        </button>
       </div>
-      <button
-        onClick={() => onChange(addDaysISO(date, 1))}
-        className="rounded-xl bg-gray-100 p-2 text-gray-600 dark:bg-slate-700 dark:text-slate-200"
-        aria-label="اليوم التالي"
-      >
-        <ChevronLeft size={16} />
-      </button>
-      <button
-        onClick={() => onChange(todayISO())}
-        className="rounded-xl bg-emerald-50 px-3 py-2 text-[11px] font-bold text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300"
-      >
-        اليوم
-      </button>
+
+      {/* التاريخ الكامل + عودة سريعة إلى اليوم */}
+      <div className="mt-2 flex items-center justify-between gap-2 px-1">
+        <span className="truncate text-[10px] font-bold text-gray-500 dark:text-slate-300">
+          {isoToDisplay(date)}
+        </span>
+        <button
+          type="button"
+          onClick={() => onChange(todayISO())}
+          className="shrink-0 rounded-full bg-emerald-50 px-3 py-1 text-[10px] font-bold text-emerald-700 transition hover:bg-emerald-100 active:scale-[0.97] dark:bg-emerald-900/30 dark:text-emerald-300"
+        >
+          اليوم
+        </button>
+      </div>
     </Card>
   );
 }
