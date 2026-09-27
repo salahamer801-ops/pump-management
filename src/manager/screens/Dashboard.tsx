@@ -4,6 +4,7 @@ import {
   AlertTriangle,
   CalendarCheck,
   CalendarClock,
+  CalendarDays,
   CalendarPlus,
   ChevronLeft,
   Coins,
@@ -28,6 +29,8 @@ import {
   currentDialaDay,
   dayEntries,
   daySummary,
+  dayNumberInRound,
+  dayOrdinal,
   dialaDayLabel,
   debtors,
   nextDialaDay,
@@ -35,6 +38,9 @@ import {
   personName,
   pumpFinancials,
   pumpWindow,
+  roundDates,
+  roundForDate,
+  roundOfDay,
   scheduleRows,
   shareholderOfPerson,
   totalUnits,
@@ -125,6 +131,22 @@ export default function Dashboard({
   const window = pumpWindow(pump);
   const pumpRunning = !!stats.current && stats.current.status !== "closed";
 
+  /** يوم الديالة المعروض: من اليوم المسجَّل إن وُجد، وإلا من الديالة التي تغطي تاريخ اليوم */
+  const dialaToday = useMemo(() => {
+    const round = roundForDate(state, stats.today);
+    const index = round ? roundDates(round.startDate, round.days).indexOf(stats.today) + 1 : 0;
+    return {
+      ordinal: stats.current
+        ? dayOrdinal(dayNumberInRound(state, stats.current))
+        : index > 0
+          ? dayOrdinal(index)
+          : "",
+      number: stats.current
+        ? (roundOfDay(state, stats.current)?.number ?? stats.current.dialaNumber)
+        : (round?.number ?? null),
+    };
+  }, [state, stats]);
+
   const alerts: { text: string; tone: "red" | "amber" | "blue"; day?: string }[] = [];
   if (stats.issues.length > 0) {
     alerts.push({
@@ -171,56 +193,114 @@ export default function Dashboard({
   return (
     <div className="space-y-4">
       <Card className="overflow-hidden">
-        <div className="bg-gradient-to-l from-emerald-600 to-emerald-500 p-5 text-white">
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-2 text-sm font-bold">
-              <Gauge size={16} /> {pump.name}
+        <div className="bg-gradient-to-l from-emerald-600 to-emerald-500 p-4 text-white sm:p-5">
+          {/* اسم المضخة + حالة اليوم */}
+          <div className="flex items-center justify-between gap-2">
+            <div className="flex min-w-0 items-center gap-2">
+              <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-xl bg-white/20">
+                <Gauge size={16} />
+              </span>
+              <span className="min-w-0 truncate text-[clamp(0.95rem,4.2vw,1.15rem)] font-black leading-tight">
+                {pump.name}
+              </span>
             </div>
-            <Pill tone="green" className="border-white/30 bg-white/20 text-white">
-              {window.start} → {window.end} · {toHours(window.capacityMin)} س
-            </Pill>
+            {stats.current ? (
+              <span className="shrink-0 whitespace-nowrap rounded-full border border-white/25 bg-white/20 px-2.5 py-0.5 text-[10px] font-bold">
+                {stats.current.status === "closed" || stats.current.status === "revised"
+                  ? "يوم مغلق"
+                  : "يوم مفتوح"}
+              </span>
+            ) : null}
           </div>
-          <div className="mt-3 text-xs text-emerald-50">{isoToDisplay(stats.today)}</div>
-          <div className="text-xs text-emerald-100">{hijriDate(stats.today)}</div>
 
-          {stats.current ? (
-            <div className="mt-4">
-              <div className="text-xs text-emerald-50">اليوم الحالي</div>
-              <div className="flex items-end justify-between">
-                <div className="text-2xl font-black">
-                  {dialaDayLabel(state, stats.current)}
-                  {currentSummary ? ` · ${currentSummary.persons} شخص` : ""}
-                </div>
-                <div className="text-left text-xs">
-                  <div>{isoToShort(stats.current.date)}</div>
-                  <div className="text-base font-extrabold">
-                    {formatDuration(currentSummary?.plannedMin || 0)} / {toHours(window.capacityMin)} س
-                  </div>
-                </div>
+          {/* التاريخ الميلادي والهجري في سطر واحد */}
+          <div className="mt-2.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] font-bold text-emerald-50/90">
+            <span className="inline-flex items-center gap-1 whitespace-nowrap">
+              <CalendarDays size={12} /> {isoToDisplay(stats.today)}
+            </span>
+            <span className="whitespace-nowrap text-emerald-100/75">{hijriDate(stats.today)}</span>
+          </div>
+
+          {/* بطاقتان صغيرتان: يوم الديالة · ساعات التشغيل */}
+          <div className="mt-3 grid grid-cols-2 gap-2">
+            <div className="rounded-2xl border border-white/20 bg-white/15 px-3 py-2.5">
+              <div className="flex items-center gap-1 text-[10px] font-bold text-emerald-50/85">
+                <Layers size={11} /> يوم الديالة
               </div>
-              <div className="mt-3 flex gap-2">
+              <div className="mt-0.5 truncate text-[clamp(0.95rem,4.4vw,1.25rem)] font-black leading-tight">
+                {dialaToday.ordinal || "—"}
+              </div>
+              <div className="truncate text-[10px] font-bold text-emerald-50/80">
+                {dialaToday.number ? `الديالة ${dialaToday.number}` : "لا توجد ديالة"}
+              </div>
+            </div>
+
+            <div className="rounded-2xl border border-white/20 bg-white/15 px-3 py-2.5">
+              <div className="flex items-center gap-1 text-[10px] font-bold text-emerald-50/85">
+                <Timer size={11} /> ساعات التشغيل
+              </div>
+              <div
+                dir="ltr"
+                className="mt-0.5 whitespace-nowrap text-[clamp(0.8rem,3.5vw,1.02rem)] font-black leading-tight"
+              >
+                {window.start} → {window.end}
+              </div>
+              <div className="truncate text-[10px] font-bold text-emerald-50/80">
+                {toHours(window.capacityMin)} س يوميًا
+              </div>
+            </div>
+          </div>
+
+          {/* اليوم الفعلي */}
+          {stats.current ? (
+            <div className="mt-3 rounded-2xl border border-white/20 bg-white/10 p-3">
+              <div className="flex flex-wrap items-center justify-between gap-x-2 gap-y-1 text-[11px] font-bold">
+                <span className="whitespace-nowrap text-emerald-50/90">
+                  اليوم الحالي · {isoToShort(stats.current.date)}
+                </span>
+                <span className="whitespace-nowrap font-black text-white">
+                  {formatDuration(currentSummary?.plannedMin || 0)} من {toHours(window.capacityMin)} س
+                  {currentSummary ? ` · ${currentSummary.persons} شخص` : ""}
+                </span>
+              </div>
+              <div className="mt-2 flex gap-2">
                 <Button
-                  className="flex-1 bg-white/15 text-white"
+                  className="min-w-0 flex-1 whitespace-nowrap bg-white text-emerald-700"
                   variant="ghost"
                   onClick={() => onOpenDay(stats.current!.id)}
                 >
-                  <CalendarClock size={16} /> فتح اليوم الفعلي
+                  <CalendarClock size={15} /> فتح اليوم
                 </Button>
                 <Button
-                  className="flex-1 bg-white text-emerald-700"
+                  className="min-w-0 flex-1 whitespace-nowrap border border-white/25 bg-white/15 text-white"
                   variant="ghost"
                   onClick={() => onGoTab("diala")}
                 >
-                  <CalendarPlus size={16} /> ديالة جديدة
+                  <CalendarPlus size={15} /> ديالة جديدة
                 </Button>
               </div>
             </div>
           ) : (
-            <div className="mt-4">
-              <p className="text-sm text-emerald-50">لا يوجد يوم فعلي مسجّل بعد.</p>
-              <Button className="mt-3 bg-white text-emerald-700" variant="ghost" onClick={() => onGoTab("diala")}>
-                <CalendarPlus size={16} /> إضافة ديالة
-              </Button>
+            <div className="mt-3 rounded-2xl border border-white/20 bg-white/10 p-3">
+              <p className="text-center text-[11px] font-bold leading-relaxed text-emerald-50/90">
+                لا يوجد يوم فعلي مسجّل بعد — أنشئ ديالة، ثم افتح يومها وابدأ التسجيل.
+              </p>
+              <div className="mt-2 flex gap-2">
+                <Button
+                  className="min-w-0 flex-1 whitespace-nowrap bg-white text-emerald-700"
+                  variant="ghost"
+                  onClick={() => onGoTab("diala")}
+                >
+                  <CalendarPlus size={15} /> إضافة ديالة
+                </Button>
+                <Button
+                  className="min-w-0 flex-1 whitespace-nowrap border border-white/25 bg-white/15 text-white"
+                  variant="ghost"
+                  onClick={() => onGoTab("day")}
+                >
+                  <CalendarClock size={15} /> فتح اليوم الفعلي
+                </Button>
+              </div>
             </div>
           )}
         </div>
