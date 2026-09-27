@@ -81,7 +81,8 @@ server/
   src/db.js     اتصال PostgreSQL + المخطّط (كل الجداول بـ IF NOT EXISTS)
   src/routes/   auth · pumps · operating · admin
   src/          الحُرّاس، الأمان، التدقيق، الإعدادات، bootstrap
-scripts/        توليد الأيقونات وفحوصات الحسابات والـ API
+scripts/        توليد صور الهوية (الأيقونات + شاشة البدء) وفحوصات الحسابات والـ API
+assets/brand/   المصدر الأصلي لصورة الهوية (يُستخدم عند إعادة التوليد فقط)
 docs/           توثيق المرحلة الثانية ومراجعة جاهزية أندرويد
 Dockerfile      نشر الخادم (node:20-alpine)
 ```
@@ -133,6 +134,27 @@ curl http://localhost:3001/api/health   # {"ok":true,"service":"pump-api"}
 | الخادم | `Dockerfile` | صورة Node تشغّل `server/src/index.js` على المنفذ 3001 |
 
 الواجهة تصل إلى خادمها عبر `/api` من نفس الأصل، فيكفي نشر الخدمتين معًا دون ضبط أي رابط.
+
+---
+
+## هوية التطبيق (الأيقونة وشاشة البدء)
+
+| الملف | الاستخدام |
+|---|---|
+| `public/icons/icon-192.png` · `icon-512.png` | أيقونة التطبيق (PWA) بزوايا شفافة |
+| `public/icons/icon-512-maskable.jpg` | أيقونة قابلة للقص على أندرويد |
+| `public/favicon.ico` · `favicon-32.png` · `apple-touch-icon.png` | أيقونة تبويب المتصفح وأيقونة الجهاز |
+| `public/brand/splash-logo.jpg` | شعار شاشة البدء (44KB فقط، ويُكاش مسبقًا) |
+| `public/brand/startup-*.jpg` | صور بدء iOS — كل جهاز ينزّل الصورة المطابقة له وحدها |
+
+شاشة البدء نفسها HTML + CSS مكتوبان داخل `index.html` (بلا صور ثقيلة وبلا JS إضافي)، وتُخفى مرة واحدة من `src/splash.ts` بعد أن يصبح التطبيق جاهزًا — مع مهلة احتياطية داخل `index.html` حتى لا تبقى عالقة.
+
+**إعادة التوليد من صورة جديدة** (أداة تطوير فقط؛ البناء والنشر لا يحتاجانها ولا يحتاجان ImageMagick):
+
+```bash
+npm run brand                       # من المصدر المحفوظ assets/brand/app-icon-source.jpg
+npm run brand -- path/to/full.png   # من صورة جديدة (تُقتطع وتُحفظ كمصدر داخل المستودع)
+```
 
 ---
 

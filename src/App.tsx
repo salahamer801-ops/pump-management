@@ -6,6 +6,7 @@ import ManagerShell from "./manager/ManagerShell";
 import ShareholderApp from "./shareholder/ShareholderApp";
 import AdminApp from "./admin/AdminApp";
 import { clearLegacySession, clearLocalModeAuth } from "./session";
+import { hideSplash } from "./splash";
 
 /**
  * الباب الأمامي للتطبيق: حساب حقيقي على الخادم فقط.
@@ -29,6 +30,11 @@ function Root() {
   const { session, loading, logout } = useAuth();
   /** فتح لوحة مسؤول النظام — لمن يدير مضخة أيضًا يبقى تطبيقه الأساسي */
   const [adminPanel, setAdminPanel] = useState(false);
+
+  /* انتهى التحقق من الجلسة: أَخفِ شاشة البدء واترك التطبيق يظهر */
+  useEffect(() => {
+    if (!loading) hideSplash();
+  }, [loading]);
 
   if (loading) {
     return (

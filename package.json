@@ -4,11 +4,10 @@
   "version": "1.0.0",
   "type": "module",
   "scripts": {
-    "predev": "node scripts/gen-icons.mjs",
     "dev": "vite",
-    "prebuild": "node scripts/gen-icons.mjs",
     "build": "vite build",
     "preview": "vite preview",
+    "brand": "bash scripts/gen-brand-assets.sh",
     "verify": "esbuild scripts/verify-calc.ts --bundle --platform=node --format=esm --outfile=.mythex/verify-calc.mjs --log-level=error && node .mythex/verify-calc.mjs"
   },
   "dependencies": {
@@ -21,7 +20,6 @@
     "@types/react": "^19.1.0",
     "@types/react-dom": "^19.1.0",
     "@vitejs/plugin-react": "^4.4.0",
-    "pngjs": "^7.0.0",
     "tailwindcss": "^4.1.0",
     "typescript": "^5.8.2",
     "vite": "^6.2.0",

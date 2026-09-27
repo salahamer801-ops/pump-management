@@ -18,7 +18,15 @@ export default defineConfig({
     tailwindcss(),
     VitePWA({
       registerType: "autoUpdate",
-      includeAssets: ["icons/icon-192.png", "icons/icon-512.png"],
+      /* ملفات الهوية تُكاش مسبقًا: أيقونة فورية وشاشة بدء تظهر بلا انتظار */
+      includeAssets: [
+        "favicon.ico",
+        "favicon-32.png",
+        "icons/icon-192.png",
+        "icons/icon-512.png",
+        "icons/icon-512-maskable.jpg",
+        "brand/splash-logo.jpg",
+      ],
       manifest: {
         name: "مشروع تنظيم المضخات",
         short_name: "تنظيم المضخات",
@@ -29,7 +37,8 @@ export default defineConfig({
         display: "standalone",
         orientation: "portrait",
         start_url: "/",
-        background_color: "#f0fdf4",
+        /* نفس لون شاشة البدء حتى تكون الإطلالة من أيقونة الجهاز سلسة */
+        background_color: "#0a2440",
         theme_color: "#059669",
         icons: [
           {
@@ -43,9 +52,9 @@ export default defineConfig({
             type: "image/png",
           },
           {
-            src: "icons/icon-512-maskable.png",
+            src: "icons/icon-512-maskable.jpg",
             sizes: "512x512",
-            type: "image/png",
+            type: "image/jpeg",
             purpose: "maskable",
           },
         ],
