@@ -18,7 +18,6 @@ import {
   Phone,
   PlayCircle,
   Plus,
-  RefreshCcw,
   ShieldCheck,
   Trash2,
   UserCheck,
@@ -44,30 +43,34 @@ import {
   DIESEL_SETTLEMENT_OPTIONS,
   ROYALTY_MODE_OPTIONS,
   capacityBreakdown,
+  checkDaySpan,
   computeUsageDraft,
   currentRight,
   dayByDate,
   dayEntries,
   dayIssues,
   dayOrdinal,
+  dayFreeGaps,
   daySettlementTotals,
+  daySpanRows,
   daySummary,
   dialaDayLabel,
   dialaDayTitle,
+  dieselPaidOf,
   dieselSettlementLabel,
   entryMinutes,
   findPerson,
   openIssues,
-  overlapsFor,
   personName,
   pumpWindow,
   royaltyModeLabel,
   roundDates,
   roundForDate,
   roundOfDay,
-  baseRosterRows,
   isBaseRosterPerson,
+  royaltyCashOf,
   shareholderOfPerson,
+  shortfallReasonLabel,
   shortageAmountOf,
   stoppageMinutesInRange,
   usageTypeLabel,
@@ -104,8 +107,8 @@ import {
   cx,
 } from "../../components/ui";
 import PersonPicker, { roleLabel } from "../../components/PersonPicker";
-import ShareholdersPanel from "../components/ShareholdersPanel";
-import DayBaseShiftCard from "../components/DayBaseShiftCard";
+import DayBaseListCard from "../components/DayBaseListCard";
+import ParticipantModal from "../components/ParticipantModal";
 import { AddDialaButton } from "../components/AddDialaModal";
 import { DayStatusPill } from "./Dashboard";
 
@@ -120,9 +123,12 @@ const STATUS_FLOW: { id: DayStatus; label: string }[] = [
 export default function ActualDayScreen({
   dayId,
   onChangeDay,
+  onGoDiala,
 }: {
   dayId: string | null;
   onChangeDay: (id: string | null) => void;
+  /** الانتقال إلى قسم «أيام الديالة» لإدارة قائمة المساهمين الأساسيين */
+  onGoDiala?: () => void;
 }) {
   const { state, actions } = useApp();
   const pump = state.pump!;
@@ -130,7 +136,6 @@ export default function ActualDayScreen({
     const d = dayId ? state.days.find((x) => x.id === dayId) : null;
     return d?.date ?? todayISO();
   });
-  const [pickerOpen, setPickerOpen] = useState(false);
   const [editEntry, setEditEntry] = useState<DayEntry | null>(null);
   const [usageEntry, setUsageEntry] = useState<DayEntry | null>(null);
   const [stoppageOpen, setStoppageOpen] = useState(false);
@@ -141,6 +146,8 @@ export default function ActualDayScreen({
   const [correctionReason, setCorrectionReason] = useState("");
   const [shortageFor, setShortageFor] = useState<string | null>(null);
   const [editPerson, setEditPerson] = useState<Person | null>(null);
+  /** نافذة إضافة مشارك في دوام اليوم (خطوة واحدة) */
+  const [participantOpen, setParticipantOpen] = useState(false);
 
   useEffect(() => {
     if (!dayId) return;
@@ -178,6 +185,15 @@ export default function ActualDayScreen({
     );
   }, [state.usages, entries, day]);
 
+  /** صفوف دوام اليوم مرتبة زمنيًا من بداية التشغيل إلى نهايته + الفراغ القادم */
+  const timeline = useMemo(() => (day ? daySpanRows(state, day, pump) : []), [state, day, pump]);
+  const timelineEntries = useMemo(
+    () => timeline.map((r) => r.entry).filter((e): e is DayEntry => Boolean(e)),
+    [timeline]
+  );
+  const allocatedMin = useMemo(() => timeline.reduce((s, r) => s + r.minutes, 0), [timeline]);
+  const nextGap = useMemo(() => (day ? dayFreeGaps(state, day, pump)[0] ?? null : null), [state, day, pump]);
+
   const changeDate = (next: string) => {
     setDate(next);
     const target = dayByDate(state, next);
@@ -186,11 +202,6 @@ export default function ActualDayScreen({
 
   /** الديالة التي يقع فيها التاريخ المختار — لا يوجد يوم خارج الديالة */
   const dialaForDate = useMemo(() => roundForDate(state, date), [state, date]);
-  /** أسطر كشف الدوام الأساسي لديالة هذا اليوم — للزر وللشارات */
-  const baseRows = useMemo(
-    () => baseRosterRows(state, day?.roundId ?? dialaForDate?.id ?? null),
-    [state, day?.roundId, dialaForDate?.id]
-  );
   const dialaDayIndex = dialaForDate
     ? roundDates(dialaForDate.startDate, dialaForDate.days).indexOf(date) + 1
     : 0;
@@ -268,7 +279,6 @@ export default function ActualDayScreen({
             }
           />
         )}
-        <ShareholdersPanel dayId={null} actor={actorName} />
       </div>
     );
   }
@@ -445,11 +455,8 @@ export default function ActualDayScreen({
         </Card>
       ) : null}
 
-      {/* 1) المساهمون الأساسيون — سجل مرجعي ثابت لا يتغيّر بتغيّر اليوم */}
-      <ShareholdersPanel dayId={day.id} actor={actorName} />
-
-      {/* 2) الدوام الأساسي — كشف الديالة: أسماء المساهمين ونصيب كل واحد في هذا الدور */}
-      <DayBaseShiftCard day={day} actor={actorName} />
+      {/* قائمة مساهمي الديالة — للعرض فقط، وإدارتها في قسم «أيام الديالة» */}
+      <DayBaseListCard day={day} onManage={onGoDiala} />
 
       {issues.length > 0 ? (
         <Card className="space-y-2 p-4">
@@ -488,34 +495,64 @@ export default function ActualDayScreen({
         </Card>
       ) : null}
 
-      {/* 3) الدوام الفعلي: من أخذ ماءه أو قاسم أسهم هذا اليوم */}
+      {/* 3) دوام اليوم الفعلي: من أخذ نصيبًا من تشغيل هذا اليوم — مرتب زمنيًا */}
       <Card className="p-4">
         <div className="mb-3 flex items-center gap-2">
           <Users size={16} className="text-emerald-600" />
           <h2 className="text-sm font-extrabold text-gray-800 dark:text-white">
-            الدوام الفعلي — من أخذ ماءه أو قاسم أسهم هذا اليوم
+            دوام اليوم الفعلي — من أخذ نصيبه من تشغيل هذا اليوم
           </h2>
           <span className="mr-auto text-[11px] text-gray-400">
-            {entries.length} مستخدم · {formatDuration(summary?.plannedMin ?? 0)} من {toHours(window.capacityMin)} ساعة
+            {timelineEntries.length} مشارك · {formatDuration(allocatedMin)} من {toHours(window.capacityMin)} ساعة
           </span>
+        </div>
+
+        {/* شريط الترتيب الزمني: من بداية تشغيل اليوم إلى نهايته */}
+        <div className="rounded-2xl bg-emerald-50/70 px-3 py-2 dark:bg-emerald-900/20" data-testid="day-timeline-bar">
+          <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] font-bold text-emerald-800 dark:text-emerald-200">
+            <span dir="ltr">{window.start} → {window.end}</span>
+            <span>الموزَّع {formatDuration(allocatedMin)}</span>
+            <span>المتبقي {formatDuration(Math.max(0, window.capacityMin - allocatedMin))}</span>
+            {nextGap ? (
+              <span className="font-normal text-emerald-700 dark:text-emerald-300">
+                أقرب فراغ: {nextGap.startTime} → {nextGap.endTime} ({formatDuration(nextGap.minutes)})
+              </span>
+            ) : (
+              <span className="font-normal text-amber-700 dark:text-amber-300">
+                لا يوجد فراغ — امتلأ دوام اليوم بالكامل
+              </span>
+            )}
+          </div>
+          <div className="mt-1.5 h-2 w-full overflow-hidden rounded-full bg-white dark:bg-slate-700">
+            <div
+              className={cx(
+                "h-full rounded-full transition-all",
+                allocatedMin > window.capacityMin ? "bg-red-500" : "bg-emerald-500"
+              )}
+              style={{
+                width: `${Math.min(100, window.capacityMin > 0 ? (allocatedMin / window.capacityMin) * 100 : 0)}%`,
+              }}
+            />
+          </div>
         </div>
 
         {settle ? <SettlementSummary totals={settle} currency={pump.currency} /> : null}
 
-        {entries.length === 0 ? (
+        {timelineEntries.length === 0 ? (
           <p className="py-4 text-center text-xs text-gray-400">
-            لا يوجد أحد في الدوام الفعلي لهذا اليوم بعد — ابدأ من كشف الديالة أو أضف من أخذ ماءه فعلًا.
+            لم يُسجَّل أحد بعد في دوام هذا اليوم — اضغط «إضافة مشارك» واكتب الاسم (يقترحه التطبيق من قائمة
+            الديالة والمسجّلين)، ثم حدّد من متى إلى متى والديزل والرواسة.
           </p>
         ) : (
           <div className="mt-3 space-y-2">
-            {entries.map((entry, index) => (
+            {timelineEntries.map((entry, index) => (
               <EntryRow
                 key={entry.id}
                 index={index}
                 entry={entry}
                 fromBaseRoster={isBaseRosterPerson(state, day.roundId ?? null, entry.personId)}
                 isFirst={index === 0}
-                isLast={index === entries.length - 1}
+                isLast={index === timelineEntries.length - 1}
                 onEdit={() => setEditEntry(entry)}
                 onUsage={() => setUsageEntry(entry)}
                 onEditPerson={() => {
@@ -563,23 +600,14 @@ export default function ActualDayScreen({
         ) : null}
 
         <div className="mt-3 flex flex-wrap gap-2">
-          <Button className="flex-1" onClick={() => setPickerOpen(true)}>
-            <Plus size={18} /> إضافة شخص للدوام الفعلي
+          <Button className="flex-1" onClick={() => setParticipantOpen(true)} data-testid="day-add-participant">
+            <Plus size={18} /> إضافة مشارك في دوام اليوم
           </Button>
-          {baseRows.length > 0 ? (
-            <Button
-              variant="secondary"
-              onClick={() => actions.applyBaseRosterToDay(day.id, { actor: actorName })}
-              title="ملء الدوام الفعلي من كشف الديالة بنفس الترتيب والنصيب"
-              data-testid="day-start-from-base"
-            >
-              <RefreshCcw size={16} /> ابدأ من كشف الديالة ({baseRows.length})
-            </Button>
-          ) : null}
         </div>
         <p className="mt-2 text-[10px] leading-relaxed text-gray-400">
-          «الدوام الفعلي» يُعدَّل بحرية: من أخذ ماءه أو قاسم أسهم هذا اليوم — تقديم/تأخير نصيب، إضافة ضيف، بيع أو سلفة
-          أو غيرها. التعديل لا يغيّر «كشف الدوام الأساسي» ولا أي يوم آخر، وكل خيار تسديد يُسجَّل كحركة مالية وسجل تدقيق.
+          كل مشارك يُسجَّل في خطوة واحدة: الاسم · من متى إلى متى والمدة · سبب النقص إن قلّ عن نصيبه في الكشف ·
+          الديزل المستحق والمدفوع منه والنقص · الرواسة (نقد / أجل / جزء نقد وجزء أجل). والأوقات يجب أن تبقى
+          متسلسلة داخل نافذة اليوم بلا تداخل — وإلا يُرفض الحفظ.
         </p>
       </Card>
 
@@ -630,41 +658,9 @@ export default function ActualDayScreen({
         </p>
       ) : null}
 
-      <PersonPicker
-        open={pickerOpen}
-        onClose={() => setPickerOpen(false)}
-        pumpId={pump.id}
-        title="إضافة مستخدم إلى اليوم الفعلي"
-        onSelect={(person, role) => {
-          const last = entries[entries.length - 1];
-          const startMin = last ? timeToMinutes(last.endTime) : timeToMinutes(day.workStart);
-          const shareholder = shareholderOfPerson(state, pump.id, person.id);
-          const fallbackMin = shareholder?.baseHoursMin || 60;
-          const entry: DayEntry = {
-            id: uid("en"),
-            dayId: day.id,
-            pumpId: pump.id,
-            orderIndex: entries.length,
-            personId: person.id,
-            role: role as EntryRole,
-            shareholderId: shareholder?.id ?? null,
-            rightId: null,
-            startTime: minutesToTime(startMin),
-            endTime: minutesToTime(startMin + fallbackMin),
-            plannedMin: fallbackMin,
-            actualPersonId: null,
-            usageId: null,
-            status: "planned",
-            postponeToDayId: null,
-            reason: "",
-            notes: "",
-            createdAt: new Date().toISOString(),
-            createdBy: "manager",
-            archived: false,
-          };
-          actions.saveEntry(entry, true);
-        }}
-      />
+      {participantOpen ? (
+        <ParticipantModal day={day} actor={actorName} onClose={() => setParticipantOpen(false)} />
+      ) : null}
 
       {editEntry ? (
         <EntryEditor
@@ -1130,7 +1126,13 @@ function SettlementChips({
     id: string;
     dieselSettlement: DieselSettlement;
     dieselShortageLiters: number;
+    dieselPaidAmount?: number;
     royaltyPayMode: RoyaltyPayMode;
+    royaltyCashAmount?: number;
+    royaltyDeferredAmount?: number;
+    /** المستحق — يُستخدم لتحديد الجزء النقدي الافتراضي عند «جزء نقد وجزء أجل» */
+    fuelAmountDue?: number;
+    royaltyAmountDue?: number;
   };
   actor: string;
   onShortage: () => void;
@@ -1139,11 +1141,22 @@ function SettlementChips({
 }) {
   const { actions } = useApp();
   const apply = (patch: { dieselSettlement?: DieselSettlement; royaltyPayMode?: RoyaltyPayMode }) => {
+    const royaltyDue = Math.round(usage.royaltyAmountDue ?? usage.royaltyDeferredAmount ?? 0);
+    const nextMode = patch.royaltyPayMode ?? usage.royaltyPayMode;
+    const cash =
+      nextMode === "partial"
+        ? usage.royaltyCashAmount && usage.royaltyCashAmount > 0
+          ? usage.royaltyCashAmount
+          : Math.round(royaltyDue / 2)
+        : 0;
     actions.setUsageSettlement(usage.id, {
       dieselSettlement: patch.dieselSettlement ?? usage.dieselSettlement,
       dieselShortageLiters:
         patch.dieselSettlement && patch.dieselSettlement !== "shortage" ? 0 : usage.dieselShortageLiters,
-      royaltyPayMode: patch.royaltyPayMode ?? usage.royaltyPayMode,
+      dieselPaidAmount: usage.dieselPaidAmount ?? 0,
+      royaltyPayMode: nextMode,
+      royaltyCashAmount: cash,
+      royaltyDeferredAmount: Math.max(0, royaltyDue - cash),
       settlementNote: "",
       reason: "تعديل من شاشة اليوم الفعلي",
       actor,
@@ -1293,6 +1306,11 @@ function EntryRow({
             ) : (
               <Pill tone="gray">لم يُسجَّل استخدام بعد</Pill>
             )}
+            {entry.shortfallReason ? (
+              <Pill tone="amber">
+                نقص النصيب: {shortfallReasonLabel(entry.shortfallReason)}
+              </Pill>
+            ) : null}
           </div>
           <div className="mt-0.5 flex flex-wrap items-center gap-x-2 text-[11px] text-gray-400">
             <button
@@ -1373,6 +1391,9 @@ function EntryRow({
             ديزل: {activeShift.fuelLiters} لتر × {activeShift.fuelPriceSnapshot} ={" "}
             {formatMoney(activeShift.fuelAmountDue, pump.currency)}
           </span>
+          <span className="font-bold text-emerald-700 dark:text-emerald-300">
+            المدفوع منه: {formatMoney(dieselPaidOf(activeShift), pump.currency)}
+          </span>
           {activeShift.dieselSettlement === "shortage" ? (
             <span className="font-bold text-amber-600">
               نقص {formatNumber(activeShift.dieselShortageLiters)} لتر ={" "}
@@ -1380,6 +1401,12 @@ function EntryRow({
             </span>
           ) : null}
           <span>رواسة: {formatMoney(activeShift.royaltyAmountDue, pump.currency)}</span>
+          {activeShift.royaltyPayMode === "partial" ? (
+            <span className="font-bold text-amber-600">
+              نقد {formatMoney(royaltyCashOf(activeShift), pump.currency)} · أجل{" "}
+              {formatMoney(Math.max(0, Math.round(activeShift.royaltyAmountDue) - royaltyCashOf(activeShift)), pump.currency)}
+            </span>
+          ) : null}
         </div>
       ) : null}
 
@@ -1470,7 +1497,10 @@ function ShortageModal({
             actions.setUsageSettlement(usage.id, {
               dieselSettlement: "shortage",
               dieselShortageLiters: liters,
+              dieselPaidAmount: paidPart,
               royaltyPayMode: usage.royaltyPayMode,
+              royaltyCashAmount: usage.royaltyCashAmount ?? 0,
+              royaltyDeferredAmount: usage.royaltyDeferredAmount ?? 0,
               settlementNote: reason,
               reason: reason || "تسجيل نقص الديزل",
               actor,
@@ -1715,8 +1745,13 @@ function UsageModal({
   const [personalFuelPrice, setPersonalFuelPrice] = useState(
     existing?.personalFuelPriceSnapshot ?? 0
   );
-  /** تأكيد التجاوز/التداخل بعد عرضه (§7) */
-  const [overlapAck, setOverlapAck] = useState(false);
+  /** المبلغ المدفوع فعلًا من الديزل + الجزء النقدي من الرواسة */
+  const [paidAmount, setPaidAmount] = useState<string>(
+    existing?.dieselPaidAmount ? String(Math.round(existing.dieselPaidAmount)) : ""
+  );
+  const [royaltyCashAmount, setRoyaltyCashAmount] = useState<string>(
+    existing?.royaltyCashAmount ? String(Math.round(existing.royaltyCashAmount)) : ""
+  );
 
   const window = pumpWindow(pump, day);
   const stoppageMin = stoppageMinutesInRange(
@@ -1730,15 +1765,38 @@ function UsageModal({
   const draft = computeUsageDraft(pump, day, startTime, endTime, { personalFuelPrice, stoppageMin });
   const shareholder = shareholderOfPerson(state, pump.id, personId);
   const right = shareholder ? currentRight(state, shareholder.id, day.date) : null;
-  const overlaps = overlapsFor(state, day, pump, startTime, endTime, existing?.id ?? null);
+  /** تحقق صارم: تداخل مع أي صف/استخدام + الخروج عن نافذة اليوم ⇒ لا يُسمح بالحفظ */
+  const spanCheck = checkDaySpan(state, day, pump, startTime, endTime, {
+    ignoreUsageId: existing?.id ?? null,
+    ignoreEntryId: entry.id,
+  });
   const breakdown = capacityBreakdown(state, day, pump, draft.minutes, existing?.id ?? null);
   const usedPrice = draft.personalFuelPriceSnapshot > 0 ? draft.personalFuelPriceSnapshot : draft.fuelPriceSnapshot;
   const shortageAmount = Math.min(
     Math.round(shortageLiters * (usedPrice || 0)),
     Math.round(draft.fuelAmountDue)
   );
+  const dueAmount = Math.round(draft.fuelAmountDue);
   const dieselOwed =
-    dieselSettlement === "paid" ? 0 : dieselSettlement === "shortage" ? shortageAmount : Math.round(draft.fuelAmountDue);
+    dieselSettlement === "paid" ? 0 : dieselSettlement === "shortage" ? shortageAmount : dueAmount;
+  /** المدفوع فعلًا: ما كتبه المسؤول، وإلا يُستنتج من حالة التسديد */
+  const paidValue =
+    paidAmount.trim() === ""
+      ? dieselSettlement === "paid"
+        ? dueAmount
+        : dieselSettlement === "shortage"
+          ? Math.max(0, dueAmount - shortageAmount)
+          : 0
+      : Math.max(0, Math.round(Number(paidAmount.replace(",", ".")) || 0));
+  const royaltyDueAmount = Math.round(draft.royaltyAmountDue);
+  const royaltyCashValue =
+    royaltyPayMode === "cash"
+      ? royaltyDueAmount
+      : royaltyPayMode === "credit"
+        ? 0
+        : royaltyCashAmount.trim() === ""
+          ? Math.round(royaltyDueAmount / 2)
+          : Math.max(0, Math.min(royaltyDueAmount, Math.round(Number(royaltyCashAmount.replace(",", ".")) || 0)));
 
   return (
     <Modal open onClose={onClose} title={existing ? "تعديل الاستخدام الفعلي" : "تسجيل الاستخدام الفعلي"}>
@@ -1794,30 +1852,25 @@ function UsageModal({
           </div>
         </div>
 
-        {overlaps.length > 0 ? (
+        {spanCheck.errors.length > 0 ? (
           <div
-            className="space-y-2 rounded-2xl border border-amber-300 bg-amber-50 px-3 py-3 text-[11px] text-amber-900 dark:border-amber-900/40 dark:bg-amber-900/20 dark:text-amber-200"
+            className="space-y-1 rounded-2xl border border-red-200 bg-red-50 px-3 py-3 text-[11px] font-bold text-red-700 dark:border-red-900/40 dark:bg-red-900/20 dark:text-red-300"
             data-testid="overlap-warning"
           >
-            <div className="font-extrabold">
-              <AlertTriangle size={13} className="inline -mt-0.5" /> تعارض في الأوقات ({overlaps.length}) — لم
-              يُحذف أي سجل
+            <div className="flex items-center gap-1">
+              <AlertTriangle size={13} /> لا يمكن الحفظ — تعارض في بيانات التشغيل
             </div>
-            {overlaps.map((o) => (
-              <div key={o.usageId} className="rounded-xl bg-white/70 px-2.5 py-1.5 dark:bg-slate-800">
-                {o.personName}: {o.startTime} → {o.endTime} — تداخل {formatDuration(o.minutes)}
+            {spanCheck.errors.map((err) => (
+              <div key={err} className="font-normal">
+                {err}
               </div>
             ))}
-            <label className="flex items-center justify-between gap-2 rounded-xl bg-white/70 px-2.5 py-2 dark:bg-slate-800">
-              <span className="font-bold">أؤكد التسجيل مع وجود التعارض (يُحفظ السبب)</span>
-              <input
-                type="checkbox"
-                checked={overlapAck}
-                onChange={(e) => setOverlapAck(e.target.checked)}
-                className="h-5 w-5 accent-amber-600"
-                aria-label="تأكيد التعارض"
-              />
-            </label>
+            {spanCheck.nextFree ? (
+              <div className="font-normal">
+                أقرب وقت متاح لمدة {formatDuration(spanCheck.minutes)}: {spanCheck.nextFree.startTime} →{" "}
+                {spanCheck.nextFree.endTime}
+              </div>
+            ) : null}
           </div>
         ) : null}
 
@@ -1871,14 +1924,22 @@ function UsageModal({
             <NumberInput value={shortageLiters} onChange={(e) => setShortageLiters(Number(e.target.value))} />
           </Field>
         ) : null}
+        <Field label="المدفوع فعلًا من هذا الشخص" hint={`المستحق ${formatMoney(dueAmount, pump.currency)} — اتركه فارغًا ليُستنتج من حالة التسديد`}>
+          <NumberInput
+            value={paidAmount}
+            onChange={(e) => setPaidAmount(e.target.value)}
+            placeholder={String(dueAmount)}
+            aria-label="المدفوع من الديزل"
+          />
+        </Field>
         <p className="rounded-2xl bg-gray-50 px-3 py-2 text-[11px] text-gray-500 dark:bg-slate-700 dark:text-slate-300">
           {DIESEL_SETTLEMENT_OPTIONS.find((o) => o.id === dieselSettlement)?.action} · يبقى عليه من الديزل:{" "}
           <b>{formatMoney(dieselOwed, pump.currency)}</b>
         </p>
 
-        {/* رسوم الرواسة — نقد أو أجل */}
+        {/* رسوم الرواسة — نقد أو أجل أو جزء نقد وجزء أجل */}
         <Field label="رسوم الرواسة">
-          <div className="grid grid-cols-2 gap-1.5">
+          <div className="grid grid-cols-3 gap-1.5">
             {ROYALTY_MODE_OPTIONS.map((o) => (
               <button
                 key={o.id}
@@ -1899,6 +1960,16 @@ function UsageModal({
             ))}
           </div>
         </Field>
+        {royaltyPayMode === "partial" ? (
+          <Field label="المدفوع نقدًا من الرواسة" hint={`الباقي أجلًا: ${formatMoney(Math.max(0, royaltyDueAmount - royaltyCashValue), pump.currency)}`}>
+            <NumberInput
+              value={royaltyCashAmount}
+              onChange={(e) => setRoyaltyCashAmount(e.target.value)}
+              placeholder={String(Math.round(royaltyDueAmount / 2))}
+              aria-label="المدفوع نقدًا من الرواسة"
+            />
+          </Field>
+        ) : null}
         <p className="rounded-2xl bg-gray-50 px-3 py-2 text-[11px] text-gray-500 dark:bg-slate-700 dark:text-slate-300">
           {ROYALTY_MODE_OPTIONS.find((o) => o.id === royaltyPayMode)?.action} · {formatMoney(draft.royaltyAmountDue, pump.currency)}
         </p>
@@ -1942,27 +2013,26 @@ function UsageModal({
                 usageType,
                 startTime,
                 endTime,
-                notes: notes || (overlaps.length > 0 ? `تعارض موقّع عليه — ${reason}` : notes),
+                notes,
                 dieselSettlement,
                 dieselShortageLiters: dieselSettlement === "shortage" ? shortageLiters : 0,
+                dieselPaidAmount: paidValue,
                 royaltyPayMode,
+                royaltyCashAmount: royaltyCashValue,
+                royaltyDeferredAmount: Math.max(0, Math.round(draft.royaltyAmountDue) - royaltyCashValue),
+                shortfallReason: entry.shortfallReason ?? "",
+                shortfallNote: entry.shortfallNote ?? "",
                 settlementNote: notes,
                 overCapacityReason: reason,
                 personalFuelPrice,
-                confirmedOverlap: overlapAck,
                 correctionReason,
                 actor,
               });
               onClose();
             }}
-            disabled={draft.minutes <= 0 || (overlaps.length > 0 && !overlapAck)}
+            disabled={draft.minutes <= 0 || !spanCheck.ok}
           >
-            <Droplets size={16} />{" "}
-            {overlaps.length > 0 && !overlapAck
-              ? "أكّد التعارض أولًا"
-              : existing
-                ? "حفظ كسجل جديد"
-                : "تسجيل الاستخدام"}
+            <Droplets size={16} /> {existing ? "حفظ كسجل جديد" : "تسجيل الاستخدام"}
           </Button>
         </div>
         <p className="text-[10px] text-gray-400">

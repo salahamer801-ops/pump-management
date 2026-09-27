@@ -26,6 +26,7 @@ import type {
   RoyaltyPayMode,
   Shareholder,
   ShareholderUseStatus,
+  ShortfallReason,
   ShareRight,
   Transaction,
   TransferEvent,
@@ -41,6 +42,7 @@ import {
   addDaysISO,
   clamp,
   durationMin,
+  formatDuration,
   isOvernight,
   isoToShort,
   minutesToTime,
@@ -1221,14 +1223,49 @@ export const DIESEL_SETTLEMENT_OPTIONS: {
 export const ROYALTY_MODE_OPTIONS: { id: RoyaltyPayMode; label: string; action: string }[] = [
   { id: "cash", label: "نقد", action: "رواسة مدفوعة نقدًا — لا دين" },
   { id: "credit", label: "أجل", action: "رواسة آجلة — تُسجَّل دينًا" },
+  { id: "partial", label: "جزء نقد وجزء أجل", action: "دفع جزءًا نقدًا ويبقى الباقي دينًا عليه" },
 ];
+
+/** أسباب نقص نصيب المشارك عن أساسه في كشف الديالة */
+export const SHORTFALL_REASON_OPTIONS: { id: Exclude<ShortfallReason, "">; label: string }[] = [
+  { id: "loan", label: "سلف" },
+  { id: "remaining", label: "ما تبقى" },
+  { id: "transfer", label: "ناقل" },
+  { id: "sold", label: "باع" },
+  { id: "other", label: "آخر" },
+];
+
+export function shortfallReasonLabel(v?: ShortfallReason | null): string {
+  if (!v) return "";
+  return SHORTFALL_REASON_OPTIONS.find((o) => o.id === v)?.label ?? "";
+}
 
 export function dieselSettlementLabel(v: DieselSettlement): string {
   return DIESEL_SETTLEMENT_OPTIONS.find((o) => o.id === v)?.label ?? "غير مسدد";
 }
 
 export function royaltyModeLabel(v: RoyaltyPayMode): string {
-  return v === "cash" ? "نقد" : "أجل";
+  return ROYALTY_MODE_OPTIONS.find((o) => o.id === v)?.label ?? "أجل";
+}
+
+/** المبلغ المدفوع فعلًا من قيمة الديزل: ما سجّله المسؤول، وإلا يُستنتج من حالة التسديد */
+export function dieselPaidOf(usage: ActualUsage): number {
+  const due = Math.round(usage.fuelAmountDue || 0);
+  const explicit = Math.round(usage.dieselPaidAmount || 0);
+  if (explicit > 0) return clamp(explicit, 0, due);
+  const mode = usage.dieselSettlement ?? "unpaid";
+  if (mode === "paid") return due;
+  if (mode === "shortage") return Math.max(0, due - shortageAmountOf(usage));
+  return 0;
+}
+
+/** الجزء المدفوع نقدًا من الرواسة */
+export function royaltyCashOf(usage: ActualUsage): number {
+  const due = Math.round(usage.royaltyAmountDue || 0);
+  const mode = usage.royaltyPayMode ?? "credit";
+  if (mode === "cash") return due;
+  if (mode === "partial") return clamp(Math.round(usage.royaltyCashAmount || 0), 0, due);
+  return 0;
 }
 
 /** قيمة نقص الديزل المحسوبة من اللترات بسعر العملية (Snapshot) */
@@ -1278,13 +1315,17 @@ export function settlementPostings(usage: ActualUsage): SettlementPosting[] {
         notes: usage.settlementNote || "",
       });
     } else if (diesel === "shortage") {
-      const paidPart = fuelDue - shortageAmountOf(usage);
+      const paidPart = dieselPaidOf(usage);
       if (paidPart > 0) {
+        const shortage = Math.max(0, fuelDue - paidPart);
         out.push({
           kind: "payment",
           direction: "credit",
           amount: paidPart,
-          reason: `سداد جزئي — نقص ${usage.dieselShortageLiters} لتر`,
+          reason:
+            shortage > 0
+              ? `سداد جزئي — نقص ${usage.dieselShortageLiters} لتر`
+              : "سداد ديزل نقدًا",
           notes: usage.settlementNote || "",
         });
       }
@@ -1292,20 +1333,26 @@ export function settlementPostings(usage: ActualUsage): SettlementPosting[] {
   }
 
   if (royaltyDue > 0) {
+    const cashPart = royaltyCashOf(usage);
     out.push({
       kind: "royalty",
       direction: "debit",
       amount: royaltyDue,
-      reason: royaltyMode === "cash" ? "استحقاق رواسة" : "رواسة آجلة (دين)",
+      reason:
+        royaltyMode === "credit"
+          ? "رواسة آجلة (دين)"
+          : royaltyMode === "partial"
+            ? "استحقاق رواسة (جزء نقد وجزء أجل)"
+            : "استحقاق رواسة",
       notes: usage.settlementNote || "",
     });
-    if (royaltyMode === "cash") {
+    if (cashPart > 0) {
       out.push({
         kind: "payment",
         direction: "credit",
-        amount: royaltyDue,
-        reason: "سداد رواسة نقدًا",
-        notes: "",
+        amount: cashPart,
+        reason: royaltyMode === "partial" ? "سداد جزء من الرواسة نقدًا" : "سداد رواسة نقدًا",
+        notes: usage.settlementNote || "",
       });
     }
   }
@@ -1805,6 +1852,266 @@ export function overlapsFor(
     }
   }
   return out;
+}
+
+/* ------------- دوام اليوم: الترتيب الزمني، الفراغات، ومنع التعارض --------- */
+
+/** فترة مشغولة داخل اليوم (صف أو استخدام) بإحداثيات نافذة التشغيل */
+interface OccupiedSpan {
+  kind: "entry" | "usage";
+  id: string;
+  personId: string;
+  personName: string;
+  startTime: string;
+  endTime: string;
+  from: number;
+  to: number;
+  minutes: number;
+}
+
+/** موضع البداية داخل نافذة التشغيل بالدقائق (يدعم نافذة تعبر منتصف الليل) */
+function windowOffset(anchorMin: number, time: string): number {
+  return (((timeToMinutes(time) - anchorMin) % 1440) + 1440) % 1440;
+}
+
+function occupiedSpans(
+  state: AppState,
+  day: DialaDay,
+  pump: Pump,
+  ignore: { ignoreEntryId?: string | null; ignoreUsageId?: string | null } = {}
+): OccupiedSpan[] {
+  const window = pumpWindow(pump, day);
+  const anchor = timeToMinutes(window.start);
+  const out: OccupiedSpan[] = [];
+  const push = (
+    kind: "entry" | "usage",
+    id: string,
+    personId: string,
+    startTime: string,
+    endTime: string
+  ) => {
+    const minutes = durationMin(startTime, endTime);
+    if (minutes <= 0) return;
+    const from = windowOffset(anchor, startTime);
+    out.push({ kind, id, personId, personName: personName(state, personId), startTime, endTime, from, to: from + minutes, minutes });
+  };
+  for (const e of state.entries) {
+    if (e.dayId !== day.id || e.archived || e.status === "cancelled") continue;
+    if (ignore.ignoreEntryId && e.id === ignore.ignoreEntryId) continue;
+    push("entry", e.id, e.personId, e.startTime, e.endTime);
+  }
+  /* الاستخدام المرتبط بصف موجود لا يُحتسب مرتين: الصف يمثّل الفترة نفسها */
+  const entryIds = new Set(out.filter((s) => s.kind === "entry").map((s) => s.id));
+  const linkedIds = new Set(
+    state.usages
+      .filter((u) => u.dayId === day.id && u.status === "active" && u.entryId && entryIds.has(u.entryId))
+      .map((u) => u.id)
+  );
+  for (const u of state.usages) {
+    if (u.dayId !== day.id || u.status !== "active") continue;
+    if (ignore.ignoreUsageId && u.id === ignore.ignoreUsageId) continue;
+    if (linkedIds.has(u.id)) continue;
+    push("usage", u.id, u.personId, u.startTime, u.endTime);
+  }
+  return out.sort((a, b) => a.from - b.from || a.to - b.to);
+}
+
+/** صف موحّد لعرض دوام اليوم: الصف ومعه استخدامه إن وُجد، أو استخدام بلا صف */
+export interface DaySpanRow {
+  key: string;
+  entry: DayEntry | null;
+  usage: ActualUsage | null;
+  personId: string;
+  personName: string;
+  startTime: string;
+  endTime: string;
+  minutes: number;
+  from: number;
+  to: number;
+  role: EntryRole;
+  fromBaseRoster: boolean;
+}
+
+/** صفوف دوام اليوم مرتّبة زمنيًا من بداية التشغيل إلى نهايته */
+export function daySpanRows(state: AppState, day: DialaDay, pump: Pump): DaySpanRow[] {
+  const window = pumpWindow(pump, day);
+  const anchor = timeToMinutes(window.start);
+  const entries = state.entries.filter((e) => e.dayId === day.id && !e.archived && e.status !== "cancelled");
+  const byEntry = new Map<string, ActualUsage>();
+  const orphans: ActualUsage[] = [];
+  const entryIds = new Set(entries.map((e) => e.id));
+  for (const u of state.usages) {
+    if (u.dayId !== day.id || u.status !== "active") continue;
+    if (u.entryId && entryIds.has(u.entryId) && !byEntry.has(u.entryId)) byEntry.set(u.entryId, u);
+    else if (!u.entryId || !entryIds.has(u.entryId)) orphans.push(u);
+  }
+  const rows: DaySpanRow[] = [];
+  const add = (entry: DayEntry | null, usage: ActualUsage | null, personId: string, startTime: string, endTime: string, role: EntryRole) => {
+    const minutes = durationMin(startTime, endTime);
+    const from = windowOffset(anchor, startTime);
+    rows.push({
+      key: entry ? entry.id : `usage-${usage?.id ?? uid("sp")}`,
+      entry,
+      usage,
+      personId,
+      personName: personName(state, personId),
+      startTime,
+      endTime,
+      minutes,
+      from,
+      to: from + minutes,
+      role,
+      fromBaseRoster: isBaseRosterPerson(state, day.roundId ?? null, personId),
+    });
+  };
+  for (const e of entries) add(e, byEntry.get(e.id) ?? null, e.personId, e.startTime, e.endTime, e.role);
+  for (const u of orphans) add(null, u, u.personId, u.startTime, u.endTime, "other");
+  return rows.sort((a, b) => a.from - b.from || a.to - b.to);
+}
+
+export interface FreeGap {
+  from: number;
+  to: number;
+  minutes: number;
+  startTime: string;
+  endTime: string;
+}
+
+/** الفراغات الزمنية المتاحة في يوم التشغيل (بعد دمج الصفوف والاستخدامات) */
+export function dayFreeGaps(
+  state: AppState,
+  day: DialaDay,
+  pump: Pump,
+  ignore: { ignoreEntryId?: string | null; ignoreUsageId?: string | null } = {}
+): FreeGap[] {
+  const window = pumpWindow(pump, day);
+  const anchor = timeToMinutes(window.start);
+  const spans = occupiedSpans(state, day, pump, ignore)
+    .map((s) => ({ from: clamp(s.from, 0, window.capacityMin), to: clamp(s.to, 0, window.capacityMin) }))
+    .filter((s) => s.to > s.from)
+    .sort((a, b) => a.from - b.from);
+  const gaps: { from: number; to: number; minutes: number }[] = [];
+  let cursor = 0;
+  for (const s of spans) {
+    if (s.from > cursor) gaps.push({ from: cursor, to: s.from, minutes: s.from - cursor });
+    cursor = Math.max(cursor, s.to);
+  }
+  if (cursor < window.capacityMin) {
+    gaps.push({ from: cursor, to: window.capacityMin, minutes: window.capacityMin - cursor });
+  }
+  return gaps.map((g) => ({
+    ...g,
+    startTime: minutesToTime(anchor + g.from),
+    endTime: minutesToTime(anchor + g.to),
+  }));
+}
+
+/** أول فراغ يستوعب مدة مطلوبة (لا يعبر حدّ نافذة اليوم) */
+export function firstFreeSlot(
+  state: AppState,
+  day: DialaDay,
+  pump: Pump,
+  wantMin: number,
+  ignore: { ignoreEntryId?: string | null; ignoreUsageId?: string | null } = {}
+): FreeGap | null {
+  const need = Math.max(0, Math.round(wantMin));
+  const gaps = dayFreeGaps(state, day, pump, ignore);
+  return gaps.find((g) => g.minutes >= (need > 0 ? need : 1)) ?? null;
+}
+
+export interface SpanConflict {
+  kind: "entry" | "usage";
+  id: string;
+  personId: string;
+  personName: string;
+  startTime: string;
+  endTime: string;
+  minutes: number;
+}
+
+export interface SpanCheck {
+  minutes: number;
+  crossesMidnight: boolean;
+  conflicts: SpanConflict[];
+  /** دقائق خارج نافذة تشغيل اليوم */
+  outsideMin: number;
+  errors: string[];
+  ok: boolean;
+  /** أول فراغ متاح بعد هذه الفترة */
+  nextFree: FreeGap | null;
+}
+
+/**
+ * تحقق صارم لفترة داخل يوم التشغيل (§7):
+ * تداخل مع أي صف/استخدام + خروج عن نافذة اليوم + مدة صفرية ⇒ لا يُسمح بالحفظ.
+ */
+export function checkDaySpan(
+  state: AppState,
+  day: DialaDay,
+  pump: Pump,
+  startTime: string,
+  endTime: string,
+  ignore: { ignoreEntryId?: string | null; ignoreUsageId?: string | null; ignorePersonEverywhere?: boolean } = {}
+): SpanCheck {
+  const window = pumpWindow(pump, day);
+  const anchor = timeToMinutes(window.start);
+  /* المدى الصفري (بداية = نهاية) مدة صفر لا 24 ساعة */
+  const minutes = rawDurationMin(startTime, endTime) === 0 ? 0 : durationMin(startTime, endTime);
+  const from = windowOffset(anchor, startTime);
+  const to = from + minutes;
+  const outsideMin = Math.max(0, Math.round(to - window.capacityMin));
+  const conflicts: SpanConflict[] = [];
+  for (const s of occupiedSpans(state, day, pump, ignore)) {
+    const overlap = Math.round(rangesOverlap({ from, to }, { from: s.from, to: s.to }));
+    if (overlap > 0) {
+      conflicts.push({
+        kind: s.kind,
+        id: s.id,
+        personId: s.personId,
+        personName: s.personName,
+        startTime: s.startTime,
+        endTime: s.endTime,
+        minutes: overlap,
+      });
+    }
+  }
+  const errors: string[] = [];
+  if (minutes <= 0) {
+    errors.push("المدة يجب أن تكون أكبر من صفر — راجع وقت البداية والنهاية.");
+  }
+  if (outsideMin > 0) {
+    errors.push(
+      `الفترة تخرج عن نافذة تشغيل اليوم (${window.start} → ${window.end}) بمقدار ${formatDuration(outsideMin)} — عدّل الوقت ليبقى داخل الدوام.`
+    );
+  }
+  if (conflicts.length > 0) {
+    errors.push(
+      `تعارض في الوقت مع ${conflicts.length} ${conflicts.length === 1 ? "فترة" : "فترات"} مسجّلة: ` +
+        conflicts
+          .slice(0, 3)
+          .map((c) => `${c.personName} (${c.startTime} → ${c.endTime})`)
+          .join(" · ") +
+        (conflicts.length > 3 ? " …" : "")
+    );
+  }
+  return {
+    minutes,
+    crossesMidnight: isOvernight(startTime, endTime),
+    conflicts,
+    outsideMin,
+    errors,
+    ok: errors.length === 0,
+    nextFree: firstFreeSlot(state, day, pump, minutes),
+  };
+}
+
+/** نصيب الشخص في كشف ديالة اليوم (0 = ليس في الكشف) */
+export function baseShareMinFor(state: AppState, roundId: string | null, personId: string): number {
+  if (!roundId) return 0;
+  const member = (state.roster ?? []).find(
+    (r) => r.roundId === roundId && r.personId === personId && !r.archived
+  );
+  return member?.shareMin ?? 0;
 }
 
 export interface CapacityBreakdown {

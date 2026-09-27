@@ -276,6 +276,10 @@ export interface DayEntry extends SoftDeletable {
   postponeToDayId: ID | null;
   reason: string;
   notes: string;
+  /** سبب نقص نصيبه في هذا اليوم عن أساسه في الكشف (سلف/ما تبقى/ناقل/باع/آخر) */
+  shortfallReason?: ShortfallReason;
+  /** تفصيل سبب النقص — نص حر يكتبه المسؤول */
+  shortfallNote?: string;
   createdAt: string;
   createdBy: string;
   archived: boolean;
@@ -288,8 +292,14 @@ export type UsageType = "share" | "rental" | "loan" | "purchase" | "extra" | "gu
 /** هل سدّد المستخدم قيمة الديزل أم لا أم هناك نقص؟ */
 export type DieselSettlement = "paid" | "shortage" | "unpaid";
 
-/** سداد رسوم الرواسة: نقد أو أجل */
-export type RoyaltyPayMode = "cash" | "credit";
+/** سداد رسوم الرواسة: نقد أو أجل أو جزء نقد وجزء أجل */
+export type RoyaltyPayMode = "cash" | "credit" | "partial";
+
+/**
+ * سبب نقص نصيب المشارك في يوم التشغيل عن أساسه في كشف الديالة:
+ * سلف · ما تبقى · ناقل · باع · آخر — يُخزَّن مع الصف ليُعرف سبب الفرق.
+ */
+export type ShortfallReason = "loan" | "remaining" | "transfer" | "sold" | "other" | "";
 
 export interface ActualUsage extends SoftDeletable {
   id: ID;
@@ -328,7 +338,16 @@ export interface ActualUsage extends SoftDeletable {
   dieselSettlement: DieselSettlement;
   /** نقص الديزل باللتر (عند اختيار «نقص») */
   dieselShortageLiters: number;
+  /** المبلغ الذي دفعه الشخص فعلًا من قيمة الديزل (0 = لم يُسجَّل → يُستنتج من حالة التسديد) */
+  dieselPaidAmount?: number;
   royaltyPayMode: RoyaltyPayMode;
+  /** عند «جزء نقد وجزء أجل»: المبلغ المدفوع نقدًا من الرواسة */
+  royaltyCashAmount?: number;
+  /** عند «جزء نقد وجزء أجل»: المبلغ الباقي أجلًا */
+  royaltyDeferredAmount?: number;
+  /** سبب نقص نصيب هذا المشارك في اليوم (يُنسخ من الصف إلى العملية) */
+  shortfallReason?: ShortfallReason;
+  shortfallNote?: string;
   settlementNote: string;
   overCapacity: boolean;
   overCapacityReason: string;

@@ -147,7 +147,11 @@ export default function ManagerApp({
       <main className="px-4 py-4">
         {tab === "home" && <Dashboard onOpenDay={openDay} onGoTab={setTab} />}
         {tab === "day" && (
-          <ActualDayScreen dayId={selectedDayId} onChangeDay={setSelectedDayId} />
+          <ActualDayScreen
+            dayId={selectedDayId}
+            onChangeDay={setSelectedDayId}
+            onGoDiala={() => setTab("diala")}
+          />
         )}
         {tab === "people" && <PeopleScreen />}
         {tab === "diala" && <DialaScreen onOpenDay={openDay} />}

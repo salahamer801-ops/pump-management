@@ -38,11 +38,13 @@ import type {
   SyncItem,
   Theme,
   Transaction,
+  ShortfallReason,
   TransferEvent,
   UsageType,
 } from "./domain/types";
 import { durationMin, isoToShort, nowTime, timeToMinutes, todayISO, uid } from "./domain/util";
 import {
+  checkDaySpan,
   computeUsageDraft,
   conflictTypeLabel,
   dayEntries as entriesOfDay,
@@ -151,7 +153,15 @@ export type Action =
       notes: string;
       dieselSettlement: DieselSettlement;
       dieselShortageLiters: number;
+      /** المبلغ المدفوع فعلًا من قيمة الديزل */
+      dieselPaidAmount?: number;
       royaltyPayMode: RoyaltyPayMode;
+      /** عند «جزء نقد وجزء أجل» */
+      royaltyCashAmount?: number;
+      royaltyDeferredAmount?: number;
+      /** سبب نقص النصيب عن أساسه في كشف الديالة */
+      shortfallReason?: ShortfallReason;
+      shortfallNote?: string;
       settlementNote: string;
       overCapacityReason: string;
       /** السعر الذي سجّله المستخدم لهذه العملية (§9) */
@@ -166,7 +176,10 @@ export type Action =
       usageId: string;
       dieselSettlement: DieselSettlement;
       dieselShortageLiters: number;
+      dieselPaidAmount?: number;
       royaltyPayMode: RoyaltyPayMode;
+      royaltyCashAmount?: number;
+      royaltyDeferredAmount?: number;
       settlementNote: string;
       actor: string;
       reason: string;
@@ -1012,6 +1025,36 @@ function reducer(state: AppState, action: Action): AppState {
     case "SAVE_ENTRY": {
       const exists = state.entries.some((e) => e.id === action.entry.id);
       const before = state.entries.find((e) => e.id === action.entry.id);
+      /* منع التعارض: الصف الجديد أو تغيير الأوقات يجب أن يبقى داخل نافذة اليوم وبلا تداخل */
+      const entryDay = state.days.find((d) => d.id === action.entry.dayId);
+      const timesChanged =
+        !before || before.startTime !== action.entry.startTime || before.endTime !== action.entry.endTime;
+      if (state.pump && entryDay && timesChanged && action.entry.status !== "cancelled") {
+        const guard = checkDaySpan(state, entryDay, state.pump, action.entry.startTime, action.entry.endTime, {
+          ignoreEntryId: action.entry.id,
+          ignoreUsageId: action.entry.usageId ?? null,
+        });
+        if (!guard.ok) {
+          return commit(state, state, {
+            action: "blocked",
+            entity: "entry",
+            entityId: action.entry.id,
+            summary: `رُفض حفظ صف ${personName(state, action.entry.personId)} (${action.entry.startTime} → ${action.entry.endTime}) — ${guard.errors[0]}`,
+            reason: guard.errors.join(" | "),
+            actor: action.actor,
+            notify: [
+              {
+                kind: "day_edited",
+                level: "warn",
+                title: "رُفض الإدخال — تعارض في الوقت",
+                body: guard.errors[0],
+                personId: action.entry.personId,
+                dayId: action.entry.dayId,
+              },
+            ],
+          });
+        }
+      }
       let entries: DayEntry[];
       if (exists) {
         entries = state.entries.map((e) => (e.id === action.entry.id ? action.entry : e));
@@ -1423,6 +1466,30 @@ function reducer(state: AppState, action: Action): AppState {
       if (!state.pump) return state;
       const day = state.days.find((d) => d.id === action.dayId);
       if (!day) return state;
+      /* منع التعارض (§7): لا يُحفظ أي إدخال جديد يتداخل مع فترة مسجّلة أو يخرج عن نافذة اليوم */
+      const spanGuard = checkDaySpan(state, day, state.pump, action.startTime, action.endTime, {
+        ignoreEntryId: action.entryId,
+      });
+      if (!spanGuard.ok && !action.confirmedOverlap) {
+        return commit(state, state, {
+          action: "blocked",
+          entity: "usage",
+          entityId: action.entryId ?? action.dayId,
+          summary: `رُفض تسجيل استخدام ${personName(state, action.personId)} (${action.startTime} → ${action.endTime}) — ${spanGuard.errors[0]}`,
+          reason: spanGuard.errors.join(" | "),
+          actor: action.actor,
+          notify: [
+            {
+              kind: "day_edited",
+              level: "warn",
+              title: "رُفض الإدخال — تعارض في الوقت",
+              body: spanGuard.errors[0],
+              personId: action.personId,
+              dayId: day.id,
+            },
+          ],
+        });
+      }
       const window = pumpWindow(state.pump, day);
       const anchor = timeToMinutes(window.start);
       const stoppageMin = stoppageMinutesInRange(
@@ -1471,7 +1538,12 @@ function reducer(state: AppState, action: Action): AppState {
         transferEventId: null,
         dieselSettlement: action.dieselSettlement,
         dieselShortageLiters: Math.max(0, action.dieselShortageLiters || 0),
+        dieselPaidAmount: Math.max(0, action.dieselPaidAmount || 0),
         royaltyPayMode: action.royaltyPayMode,
+        royaltyCashAmount: Math.max(0, action.royaltyCashAmount || 0),
+        royaltyDeferredAmount: Math.max(0, action.royaltyDeferredAmount || 0),
+        shortfallReason: action.shortfallReason ?? "",
+        shortfallNote: action.shortfallNote ?? "",
         settlementNote: action.settlementNote,
         overCapacity,
         overCapacityReason: overCapacity ? action.overCapacityReason : "",
@@ -1551,7 +1623,10 @@ function reducer(state: AppState, action: Action): AppState {
         ...usage,
         dieselSettlement: action.dieselSettlement,
         dieselShortageLiters: Math.max(0, action.dieselShortageLiters || 0),
+        dieselPaidAmount: Math.max(0, action.dieselPaidAmount ?? usage.dieselPaidAmount ?? 0),
         royaltyPayMode: action.royaltyPayMode,
+        royaltyCashAmount: Math.max(0, action.royaltyCashAmount ?? usage.royaltyCashAmount ?? 0),
+        royaltyDeferredAmount: Math.max(0, action.royaltyDeferredAmount ?? usage.royaltyDeferredAmount ?? 0),
         settlementNote: action.settlementNote,
         updatedAt: new Date().toISOString(),
       };
@@ -2633,7 +2708,12 @@ export interface AppActions {
     notes: string;
     dieselSettlement: DieselSettlement;
     dieselShortageLiters: number;
+    dieselPaidAmount?: number;
     royaltyPayMode: RoyaltyPayMode;
+    royaltyCashAmount?: number;
+    royaltyDeferredAmount?: number;
+    shortfallReason?: ShortfallReason;
+    shortfallNote?: string;
     settlementNote: string;
     overCapacityReason: string;
     personalFuelPrice?: number;
@@ -2646,7 +2726,10 @@ export interface AppActions {
     input: {
       dieselSettlement: DieselSettlement;
       dieselShortageLiters: number;
+      dieselPaidAmount?: number;
       royaltyPayMode: RoyaltyPayMode;
+      royaltyCashAmount?: number;
+      royaltyDeferredAmount?: number;
       settlementNote: string;
       reason: string;
       actor: string;

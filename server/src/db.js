@@ -375,6 +375,9 @@ CREATE TABLE IF NOT EXISTS day_entries (
   deleted_by uuid,
   deletion_reason text NOT NULL DEFAULT ''
 );
+/* سبب نقص نصيب المشارك في دوام اليوم عن أساسه في الكشف */
+ALTER TABLE day_entries ADD COLUMN IF NOT EXISTS shortfall_reason text NOT NULL DEFAULT '';
+ALTER TABLE day_entries ADD COLUMN IF NOT EXISTS shortfall_note text NOT NULL DEFAULT '';
 CREATE INDEX IF NOT EXISTS day_entries_day_idx ON day_entries(day_id);
 
 /* الاستخدام الفعلي — يحمل snapshot للقيم المطبَّقة وقت العملية */
@@ -404,6 +407,13 @@ CREATE TABLE IF NOT EXISTS actual_usages (
   deletion_reason text NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS actual_usages_pump_idx ON actual_usages(pump_id);
+/* حقول التسديد التفصيلية: المدفوع من الديزل، والرواسة جزءًا نقدًا وجزءًا أجلًا، وسبب نقص النصيب */
+ALTER TABLE actual_usages ADD COLUMN IF NOT EXISTS diesel_paid_amount numeric NOT NULL DEFAULT 0;
+ALTER TABLE actual_usages ADD COLUMN IF NOT EXISTS royalty_pay_mode text NOT NULL DEFAULT 'credit';
+ALTER TABLE actual_usages ADD COLUMN IF NOT EXISTS royalty_cash_amount numeric NOT NULL DEFAULT 0;
+ALTER TABLE actual_usages ADD COLUMN IF NOT EXISTS royalty_deferred_amount numeric NOT NULL DEFAULT 0;
+ALTER TABLE actual_usages ADD COLUMN IF NOT EXISTS shortfall_reason text NOT NULL DEFAULT '';
+ALTER TABLE actual_usages ADD COLUMN IF NOT EXISTS shortfall_note text NOT NULL DEFAULT '';
 
 /* التوقفات (عطل، مطر، وقود، طارئ …) */
 CREATE TABLE IF NOT EXISTS pump_stops (

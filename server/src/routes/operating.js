@@ -195,6 +195,8 @@ const SPECS = {
       reason: asText,
       notes: asText,
       entryType: asText,
+      shortfallReason: asText,
+      shortfallNote: asText,
     },
     dates: [],
   },
@@ -215,6 +217,12 @@ const SPECS = {
       stoppageMin: asNum,
       dieselSettlement: asText,
       dieselShortageLiters: asNum,
+      dieselPaidAmount: asNum,
+      royaltyPayMode: asText,
+      royaltyCashAmount: asNum,
+      royaltyDeferredAmount: asNum,
+      shortfallReason: asText,
+      shortfallNote: asText,
     },
     dates: [["date", "date"]],
   },
@@ -299,9 +307,18 @@ async function upsertCollection(tx, key, pumpId, rows, actorId) {
       cols.push(COLUMN_OVERRIDES[prop] ?? camelToSnake(prop));
       vals.push(fn(raw[prop]));
     }
+    /* عدة أسماء للحقل نفسه (recordDate/date/paidAt) لعامود تاريخ واحد:
+       لا يتكرّر العمود في الإدراج — يُؤخذ أول قيمة موجودة */
     for (const [prop, column] of spec.dates) {
-      cols.push(COLUMN_OVERRIDES[column] ?? column);
-      vals.push(asDate(raw[prop]));
+      const col = COLUMN_OVERRIDES[column] ?? column;
+      const value = asDate(raw[prop]);
+      const existing = cols.indexOf(col);
+      if (existing === -1) {
+        cols.push(col);
+        vals.push(value);
+      } else if (value !== null && vals[existing] === null) {
+        vals[existing] = value;
+      }
     }
     cols.push("payload");
     vals.push(JSON.stringify(raw));

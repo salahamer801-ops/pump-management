@@ -3,6 +3,7 @@
  * المصادقة والتصريح هنا — لا في الواجهة.
  */
 import express from "express";
+import { appendFileSync } from "node:fs";
 import { initSchema, pool, q } from "./db.js";
 import { HttpError, wrap } from "./http.js";
 import { authRouter } from "./routes/auth.js";
@@ -91,7 +92,7 @@ app.use((err, _req, res, _next) => {
   const code = err instanceof HttpError ? err.code : "server_error";
   const message =
     err instanceof HttpError ? err.message : "حدث خطأ غير متوقع في الخادم — حاول مرة أخرى.";
-  if (status >= 500) console.error("[api]", err);
+  if (status >= 500) { console.error("[api]", err); try { appendFileSync("/tmp/api-error.log", `${new Date().toISOString()}\n${err?.message}\n${String(err?.stack).split("\n").slice(0,5).join("\n")}\n---\n`); } catch {} }
   res.status(status).json({ error: { code, message } });
 });
 
