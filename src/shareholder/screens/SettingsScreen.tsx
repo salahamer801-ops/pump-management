@@ -26,6 +26,7 @@ import {
   TextInput,
 } from "../../components/ui";
 import { formatDateTime } from "../../format";
+import InstallAppCard from "../../components/InstallAppCard";
 
 export default function SettingsScreen({ onLogout }: { onLogout: () => void }) {
   const { state, actions } = useShareholder();
@@ -98,6 +99,9 @@ export default function SettingsScreen({ onLogout }: { onLogout: () => void }) {
           </Button>
         </div>
       </Card>
+
+      {/* تثبيت التطبيق على الجوال — عنصر إعدادات كأي تطبيق عادي */}
+      <InstallAppCard t={t} />
 
       {/* الثيم */}
       <Card className="p-5">

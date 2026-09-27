@@ -18,6 +18,7 @@ import {
   Wifi,
 } from "lucide-react";
 import { useApp } from "../../store";
+import InstallAppCard from "../../components/InstallAppCard";
 import type { AppState, Currency, EnergyType } from "../../domain/types";
 import { normalizeState } from "../../domain/migrate";
 import { formatClock, todayISO } from "../../domain/util";
@@ -32,7 +33,7 @@ export default function SettingsScreen({
   onLogout: () => void;
   userName: string;
 }) {
-  const { state, actions } = useApp();
+  const { state, actions, syncState } = useApp();
   const pump = state.pump!;
   const fileRef = useRef<HTMLInputElement>(null);
   const [confirmReset, setConfirmReset] = useState(false);
@@ -50,6 +51,16 @@ export default function SettingsScreen({
   };
 
   const pending = state.syncQueue.filter((s) => s.status === "pending").length;
+
+  /** حالة الخادم — سطر صغير هنا بدل الشارة التي كانت في الشريط العلوي */
+  const server =
+    syncState === "synced"
+      ? { label: "متصل — البيانات محفوظة على الخادم", dot: "bg-emerald-500", tone: "text-emerald-700 dark:text-emerald-400" }
+      : syncState === "connecting"
+        ? { label: "جارٍ الحفظ على الخادم…", dot: "bg-amber-400", tone: "text-gray-600 dark:text-slate-200" }
+        : syncState === "offline"
+          ? { label: "لا يوجد اتصال بالإنترنت الآن", dot: "bg-amber-500", tone: "text-amber-600 dark:text-amber-400" }
+          : { label: "محلي — لم تبدأ المزامنة بعد", dot: "bg-gray-300", tone: "text-gray-500 dark:text-slate-300" };
 
   const exportData = () => {
     const blob = new Blob([JSON.stringify(state, null, 2)], { type: "application/json" });
@@ -152,6 +163,9 @@ export default function SettingsScreen({
         </p>
       </Card>
 
+      {/* تثبيت التطبيق على الجوال — عنصر إعدادات كأي تطبيق عادي */}
+      <InstallAppCard />
+
       <Card className="space-y-3 p-4">
         <div className="flex items-center gap-2">
           <Wifi size={16} className="text-emerald-600" />
@@ -169,6 +183,13 @@ export default function SettingsScreen({
             <span className="text-gray-400">آخر مزامنة</span>
             <span className="font-bold text-gray-700 dark:text-slate-200">
               {state.settings.lastSyncAt ? formatClock(state.settings.lastSyncAt) : "لم تحدث بعد"}
+            </span>
+          </div>
+          <div className="mt-1.5 flex items-center justify-between border-t border-gray-200/70 pt-1.5 dark:border-slate-600">
+            <span className="text-gray-400">حالة الخادم</span>
+            <span className={cx("flex items-center gap-1.5 font-bold", server.tone)} data-testid="server-status">
+              <span className={cx("h-2 w-2 rounded-full", server.dot)} />
+              {server.label}
             </span>
           </div>
         </div>
