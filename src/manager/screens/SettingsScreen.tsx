@@ -18,7 +18,7 @@ import {
   Wifi,
 } from "lucide-react";
 import { useApp } from "../../store";
-import InstallAppCard from "../../components/InstallAppCard";
+import ShareAppButton from "../../components/ShareAppButton";
 import type { AppState, Currency, EnergyType } from "../../domain/types";
 import { normalizeState } from "../../domain/migrate";
 import { formatClock, todayISO } from "../../domain/util";
@@ -163,9 +163,6 @@ export default function SettingsScreen({
         </p>
       </Card>
 
-      {/* تثبيت التطبيق على الجوال — عنصر إعدادات كأي تطبيق عادي */}
-      <InstallAppCard />
-
       <Card className="space-y-3 p-4">
         <div className="flex items-center gap-2">
           <Wifi size={16} className="text-emerald-600" />
@@ -295,6 +292,9 @@ export default function SettingsScreen({
           </div>
         </Card>
       ) : null}
+
+      {/* زر صغير أسفل الشاشة: مشاركة رابط التطبيق */}
+      <ShareAppButton className="pb-2 pt-1" />
 
       {/* إعدادات المضخة — نافذة منبثقة */}
       <Modal open={pumpOpen} onClose={() => setPumpOpen(false)} title="إعدادات المضخة">

@@ -26,7 +26,7 @@ import {
   TextInput,
 } from "../../components/ui";
 import { formatDateTime } from "../../format";
-import InstallAppCard from "../../components/InstallAppCard";
+import ShareAppButton from "../../components/ShareAppButton";
 
 export default function SettingsScreen({ onLogout }: { onLogout: () => void }) {
   const { state, actions } = useShareholder();
@@ -99,9 +99,6 @@ export default function SettingsScreen({ onLogout }: { onLogout: () => void }) {
           </Button>
         </div>
       </Card>
-
-      {/* تثبيت التطبيق على الجوال — عنصر إعدادات كأي تطبيق عادي */}
-      <InstallAppCard t={t} />
 
       {/* الثيم */}
       <Card className="p-5">
@@ -274,6 +271,9 @@ export default function SettingsScreen({ onLogout }: { onLogout: () => void }) {
           )}
         </p>
       </Card>
+
+      {/* زر صغير أسفل الشاشة: مشاركة رابط التطبيق */}
+      <ShareAppButton t={t} className="pb-2 pt-1" />
     </div>
   );
 }
