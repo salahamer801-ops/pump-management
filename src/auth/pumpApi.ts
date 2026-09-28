@@ -10,9 +10,6 @@ export const updatePump = (
   patch: { name?: string; description?: string; location?: string }
 ) => api<{ pump: ManagedPump }>(`/api/pumps/${pumpId}`, { method: "PATCH", body: patch }).then((r) => r.pump);
 
-export const listPumps = () =>
-  api<{ managedPumps: ManagedPump[]; memberships: Membership[] }>("/api/pumps");
-
 export const requestJoin = (pumpCode: string, note = "") =>
   api<{ request: { id: string; status: string } }>("/api/pumps/join", {
     method: "POST",
@@ -55,5 +52,3 @@ export const removeMember = (pumpId: string, membershipId: string, reason: strin
 
 export const pumpAudit = (pumpId: string) =>
   api<{ logs: AuditRow[] }>(`/api/pumps/${pumpId}/audit`).then((r) => r.logs ?? []);
-
-export const myAudit = () => api<{ logs: AuditRow[] }>("/api/audit/me").then((r) => r.logs ?? []);

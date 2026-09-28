@@ -62,40 +62,6 @@ export function readManagerState(pumpId?: string | null): AppState | null {
 }
 
 /**
- * ارتباط الحساب بالشخص صار بموافقة المسؤول على الخادم (§21، §34) —
- * لم يبقَ ارتباط ذاتي محلي يمنح صلاحية.
- *
- * الرمز المحلي هنا ليس صلاحية: هو فقط «أيّ شخص في بيانات هذا الجهاز أستعرض سجله»،
- * ويُستخدم عندما لا توجد عضوية معتمدة من الخادم (قراءة فقط، لا يمنح أي وصول لبيانات غيرك).
- */
-/**
- * كل سجلات المضخات المحفوظة على هذا الجهاز (بلا تكرار).
- * لم يبقَ للوضع المحلي مدخل في الواجهة، وهذه الدالة باقية لأجل مسار واحد فقط:
- * استيراد بيانات جهاز قديمة إلى الخادم إن طلبت ذلك لاحقًا.
- */
-export function localManagerStates(): AppState[] {
-  const seen = new Set<string>();
-  const out: AppState[] = [];
-  const push = (state: AppState | null) => {
-    if (!state?.pump) return;
-    if (seen.has(state.pump.id)) return;
-    seen.add(state.pump.id);
-    out.push(state);
-  };
-  push(readManagerState(null));
-  try {
-    for (let i = 0; i < localStorage.length; i += 1) {
-      const key = localStorage.key(i);
-      if (!key || !key.startsWith(`${MANAGER_STORAGE_KEY}::`)) continue;
-      push(readManagerState(key.slice(MANAGER_STORAGE_KEY.length + 2)));
-    }
-  } catch {
-    /* ignore */
-  }
-  return out;
-}
-
-/**
  * ذاكرة البيانات الرسمية القادمة من الخادم (cache، وليست مصدرًا).
  * المصدر الرسمي هو PostgreSQL — هذه مجرد نسخة تُعرض للمستخدم على جهازه
  * (وتتيح للمساهم رؤية بيانات المضخة الرسمية من أي جهاز).
@@ -111,14 +77,6 @@ export function saveOfficialState(pumpId: string, state: AppState): void {
     localStorage.setItem(officialStorageKey(pumpId), JSON.stringify({ ...state, official: true }));
   } catch {
     /* ignore */
-  }
-}
-
-export function readOfficialState(pumpId: string): AppState | null {
-  try {
-    return parseManagerState(localStorage.getItem(officialStorageKey(pumpId)));
-  } catch {
-    return null;
   }
 }
 
@@ -139,10 +97,3 @@ export function saveUserLink(personId: string | null): void {
   }
 }
 
-export function clearLegacyUserLink(): void {
-  try {
-    localStorage.removeItem(USER_LINK_KEY);
-  } catch {
-    /* ignore */
-  }
-}
