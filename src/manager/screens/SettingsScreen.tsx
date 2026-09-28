@@ -4,34 +4,36 @@ import {
   Database,
   Download,
   Droplets,
-  Fuel,
   Info,
-  Moon,
+  KeyRound,
   RefreshCcw,
   Save,
   Pencil,
+  Linkedin,
   SlidersHorizontal,
-  Sun,
-  Tractor,
   Trash2,
   Upload,
   Wifi,
 } from "lucide-react";
 import { useApp } from "../../store";
-import ShareAppButton from "../../components/ShareAppButton";
 import type { AppState, Currency, EnergyType } from "../../domain/types";
 import { normalizeState } from "../../domain/migrate";
-import { formatClock, todayISO } from "../../domain/util";
+import {formatClock, formatTimeRange, todayISO} from "../../domain/util";
 import { Button, Card, Field, Modal, NumberInput, Pill, Select, TextArea, TextInput, TimeInput, cx } from "../../components/ui";
+import { InstallAppCard } from "../../components/InstallApp";
+import { AppearanceCard } from "../../components/AppearanceCard";
+import TelegramVerifyCard from "../../components/TelegramVerify";
+import { BRAND_NAME, BrandLogo } from "../../components/Brand";
 
 const currencyLabel = (c: Currency) => (c === "YER" ? "ريال يمني" : c === "SAR" ? "ريال سعودي" : "دولار");
 
 export default function SettingsScreen({
   onLogout,
-  userName,
+  onSwitchPump,
 }: {
   onLogout: () => void;
-  userName: string;
+  /** مفتاح المضخات: تبديل مضخة أو إنشاء أخرى — من هنا فقط، بزر صغير */
+  onSwitchPump?: () => void;
 }) {
   const { state, actions, syncState } = useApp();
   const pump = state.pump!;
@@ -51,16 +53,6 @@ export default function SettingsScreen({
   };
 
   const pending = state.syncQueue.filter((s) => s.status === "pending").length;
-
-  /** حالة الخادم — سطر صغير هنا بدل الشارة التي كانت في الشريط العلوي */
-  const server =
-    syncState === "synced"
-      ? { label: "متصل — البيانات محفوظة على الخادم", dot: "bg-emerald-500", tone: "text-emerald-700 dark:text-emerald-400" }
-      : syncState === "connecting"
-        ? { label: "جارٍ الحفظ على الخادم…", dot: "bg-amber-400", tone: "text-gray-600 dark:text-slate-200" }
-        : syncState === "offline"
-          ? { label: "لا يوجد اتصال بالإنترنت الآن", dot: "bg-amber-500", tone: "text-amber-600 dark:text-amber-400" }
-          : { label: "محلي — لم تبدأ المزامنة بعد", dot: "bg-gray-300", tone: "text-gray-500 dark:text-slate-300" };
 
   const exportData = () => {
     const blob = new Blob([JSON.stringify(state, null, 2)], { type: "application/json" });
@@ -88,9 +80,80 @@ export default function SettingsScreen({
 
   return (
     <div className="space-y-4">
+      {/* هوية التطبيق وحالة الحفظ على الخادم — مختصرة كما في الإعدادات المعتادة */}
+      <Card className="space-y-3 p-4" data-testid="app-identity">
+        <div className="flex items-center gap-3">
+          <BrandLogo size={54} />
+          <div className="min-w-0 flex-1">
+            <div className="truncate text-sm font-black text-gray-900 dark:text-white">{BRAND_NAME}</div>
+            <div className="mt-0.5 truncate text-[11px] text-gray-400">
+              {pump.name}
+              {pump.pumpCode ? (
+                <>
+                  {" · "}
+                  <span className="font-mono font-bold text-sky-600 dark:text-sky-400">
+                    {pump.pumpCode}
+                  </span>
+                </>
+              ) : null}
+            </div>
+          </div>
+        </div>
+
+        <div className="flex items-center justify-between gap-2 rounded-2xl bg-gray-50 px-3 py-2 dark:bg-slate-700">
+          <span className="text-[11px] text-gray-400">حالة الحفظ على الخادم</span>
+          <span
+            data-testid="settings-sync-status"
+            className={cx(
+              "inline-flex items-center gap-1.5 text-[11px] font-extrabold",
+              syncState === "synced"
+                ? "text-emerald-700 dark:text-emerald-400"
+                : syncState === "connecting"
+                  ? "text-gray-500 dark:text-slate-300"
+                  : "text-amber-600 dark:text-amber-400"
+            )}
+          >
+            <span
+              className={cx(
+                "h-2 w-2 rounded-full",
+                syncState === "synced"
+                  ? "bg-emerald-500"
+                  : syncState === "connecting"
+                    ? "animate-pulse bg-gray-400"
+                    : "bg-amber-500"
+              )}
+            />
+            {syncState === "synced"
+              ? "محفوظ على الخادم"
+              : syncState === "connecting"
+                ? "جارٍ الحفظ…"
+                : syncState === "offline"
+                  ? "لا يوجد اتصال بالإنترنت"
+                  : "على هذا الجهاز فقط"}
+          </span>
+
+          {onSwitchPump ? (
+            /* مفتاح صغير: تبديل المضخة أو إنشاء مضخة أخرى — مكانه الإعدادات فقط */
+            <button
+              type="button"
+              onClick={onSwitchPump}
+              title="مفتاح المضخات: تبديل مضخة أو إنشاء أخرى"
+              aria-label="مفتاح المضخات — تبديل أو إنشاء مضخة أخرى"
+              data-testid="pump-key"
+              className="flex shrink-0 items-center gap-1 rounded-xl border border-gray-200 bg-white px-2 py-1 text-[10px] font-bold text-gray-500 transition hover:border-brand-300 hover:text-brand-700 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-300 dark:hover:border-sky-700 dark:hover:text-sky-300"
+            >
+              <KeyRound size={12} />
+              مضخة أخرى
+            </button>
+          ) : null}
+        </div>
+      </Card>
+      {/* التطبيق على جوال المسؤول — أيقونة على الشاشة الرئيسية بلا متجر تطبيقات */}
+      <InstallAppCard />
+      <TelegramVerifyCard />
       <Card className="space-y-3 p-4">
         <div className="flex items-center gap-2">
-          <Droplets size={16} className="text-emerald-600" />
+          <Droplets size={16} className="text-sky-600 dark:text-sky-300" />
           <h2 className="text-sm font-extrabold text-gray-800 dark:text-white">إعدادات المضخة</h2>
           <button
             className="mr-auto flex items-center gap-1 rounded-xl px-2 py-1 text-[11px] font-bold text-emerald-700 hover:bg-emerald-50 dark:text-emerald-300 dark:hover:bg-emerald-900/20"
@@ -114,7 +177,7 @@ export default function SettingsScreen({
           <div className="rounded-2xl bg-gray-50 px-2 py-2 dark:bg-slate-700">
             <div className="text-gray-400">ساعات التشغيل</div>
             <div className="text-xs text-gray-800 dark:text-white">
-              {pump.workStart} → {pump.workEnd}
+              {formatTimeRange(pump.workStart, pump.workEnd)}
             </div>
           </div>
           <div className="rounded-2xl bg-gray-50 px-2 py-2 dark:bg-slate-700">
@@ -132,40 +195,12 @@ export default function SettingsScreen({
         </Button>
       </Card>
 
-      <Card className="space-y-3 p-4">
-        <div className="flex items-center gap-2">
-          {state.settings.theme === "dark" ? <Moon size={16} className="text-emerald-600" /> : <Sun size={16} className="text-emerald-600" />}
-          <h2 className="text-sm font-extrabold text-gray-800 dark:text-white">المظهر والواجهة</h2>
-        </div>
-        <div className="flex gap-2">
-          {(
-            [
-              { id: "light", label: "الوضع الفاتح" },
-              { id: "dark", label: "الوضع الداكن" },
-            ] as const
-          ).map((t) => (
-            <button
-              key={t.id}
-              onClick={() => actions.setTheme(t.id)}
-              className={cx(
-                "flex-1 rounded-2xl border px-3 py-2 text-xs font-bold transition",
-                state.settings.theme === t.id
-                  ? "border-emerald-400 bg-emerald-50 text-emerald-700 dark:bg-emerald-900/30"
-                  : "border-gray-200 text-gray-500 dark:border-slate-600 dark:text-slate-300"
-              )}
-            >
-              {t.label}
-            </button>
-          ))}
-        </div>
-        <p className="text-[10px] text-gray-400">
-          الواجهة عربية بالكامل مع دعم الاتجاه RTL، والنصوص والبطاقات تظهر في الوضعين.
-        </p>
-      </Card>
+      {/* المظهر والكتابة: الوضع · قوة الكتابة · لون التمييز · حجم الخط */}
+      <AppearanceCard value={state.settings} onChange={actions.setAppearance} />
 
       <Card className="space-y-3 p-4">
         <div className="flex items-center gap-2">
-          <Wifi size={16} className="text-emerald-600" />
+          <Wifi size={16} className="text-sky-600 dark:text-sky-300" />
           <h2 className="text-sm font-extrabold text-gray-800 dark:text-white">العمل بدون إنترنت والمزامنة</h2>
           <Pill tone={pending > 0 ? "amber" : "green"}>
             <CloudOff size={11} /> {pending} تغيير بانتظار المزامنة
@@ -182,18 +217,10 @@ export default function SettingsScreen({
               {state.settings.lastSyncAt ? formatClock(state.settings.lastSyncAt) : "لم تحدث بعد"}
             </span>
           </div>
-          <div className="mt-1.5 flex items-center justify-between border-t border-gray-200/70 pt-1.5 dark:border-slate-600">
-            <span className="text-gray-400">حالة الخادم</span>
-            <span className={cx("flex items-center gap-1.5 font-bold", server.tone)} data-testid="server-status">
-              <span className={cx("h-2 w-2 rounded-full", server.dot)} />
-              {server.label}
-            </span>
-          </div>
         </div>
         <p className="rounded-2xl bg-sky-50 px-3 py-2 text-[11px] leading-relaxed text-sky-700 dark:bg-sky-900/30 dark:text-sky-300">
-          كل تعديل يُحفظ على الجهاز فورًا ويُضاف إلى قائمة المزامنة، ويظل النظام يعمل بدون إنترنت. المزامنة السحابية
-          بين عدة أجهزة تُفعَّل مع مرحلة الحسابات (كل مستخدم يدخل من هاتفه). وعند وجود تعارض مزامنة تُحفظ النسختان
-          ولا يُستبدل السجل الرسمي بالشخصي.
+          كل تعديل يُحفظ على الجهاز فورًا ويُرفع إلى الخادم خلال ثوانٍ، وتبقى بيانات مضخاتك جاهزة على أي جهاز تدخل
+          منه بحسابك. وإن انقطع الإنترنت يعمل التطبيق كما هو وتُرفع التعديلات عند عودة الاتصال.
         </p>
         <Button variant="outline" className="w-full" onClick={() => actions.markSynced()}>
           <RefreshCcw size={16} /> تعليم كل التغييرات كمُزامنة
@@ -202,7 +229,7 @@ export default function SettingsScreen({
 
       <Card className="space-y-3 p-4">
         <div className="flex items-center gap-2">
-          <Database size={16} className="text-emerald-600" />
+          <Database size={16} className="text-sky-600 dark:text-sky-300" />
           <h2 className="text-sm font-extrabold text-gray-800 dark:text-white">البيانات</h2>
         </div>
         <div className="grid grid-cols-3 gap-2 text-center text-[10px] font-bold">
@@ -238,9 +265,6 @@ export default function SettingsScreen({
           }}
         />
         <div className="flex flex-wrap gap-2">
-          <Button variant="outline" className="flex-1" onClick={() => actions.seedDemo()}>
-            <Fuel size={16} /> بيانات تجريبية
-          </Button>
           <Button variant="danger" className="flex-1" onClick={() => setConfirmReset(true)}>
             <Trash2 size={16} /> مسح كل البيانات
           </Button>
@@ -254,7 +278,7 @@ export default function SettingsScreen({
 
       <Card className="space-y-2 p-4">
         <div className="flex items-center gap-2">
-          <Info size={16} className="text-emerald-600" />
+          <Info size={16} className="text-sky-600 dark:text-sky-300" />
           <h2 className="text-sm font-extrabold text-gray-800 dark:text-white">عن النظام</h2>
         </div>
         <p className="text-[11px] leading-relaxed text-gray-500 dark:text-slate-300">
@@ -262,8 +286,18 @@ export default function SettingsScreen({
           الأساسي، اليوم الفعلي، والسجل الشخصي للمستخدم. كل التعديلات تُسجَّل في سجل تدقيق، والبيانات تُحفظ
           دائمًا (حذف ناعم فقط).
         </p>
-        <div className="flex items-center gap-2 text-[11px] text-gray-400">
-          <Tractor size={13} /> المسؤول الحالي: {userName || "المسؤول"}
+        <div className="flex flex-wrap items-center gap-x-2 gap-y-1.5 text-[11px] text-gray-500 dark:text-slate-300">
+          <span className="font-bold">برمجة وتطوير: عبدالملك عامر</span>
+          <a
+            href="https://www.linkedin.com/in/abdulmalek-saleh-amer-70057226b"
+            target="_blank"
+            rel="noopener noreferrer"
+            aria-label="صفحة المطوّر عبدالملك عامر على LinkedIn"
+            data-testid="developer-linkedin"
+            className="flex items-center gap-1.5 rounded-xl border border-sky-200 bg-sky-50 px-2.5 py-1 font-bold text-sky-700 transition hover:bg-sky-100 dark:border-sky-700 dark:bg-sky-900/30 dark:text-sky-200"
+          >
+            <Linkedin size={13} /> LinkedIn
+          </a>
         </div>
         <Button variant="ghost" className="w-full" onClick={onLogout}>
           تسجيل الخروج
@@ -292,9 +326,6 @@ export default function SettingsScreen({
           </div>
         </Card>
       ) : null}
-
-      {/* زر صغير أسفل الشاشة: مشاركة رابط التطبيق */}
-      <ShareAppButton className="pb-2 pt-1" />
 
       {/* إعدادات المضخة — نافذة منبثقة */}
       <Modal open={pumpOpen} onClose={() => setPumpOpen(false)} title="إعدادات المضخة">
@@ -391,7 +422,7 @@ export default function SettingsScreen({
               type="checkbox"
               checked={draft.royaltyEnabled}
               onChange={(e) => set("royaltyEnabled", e.target.checked)}
-              className="h-5 w-5 accent-emerald-600"
+              className="h-5 w-5 accent-sky-600"
             />
           </label>
           <Field label="ملاحظات">

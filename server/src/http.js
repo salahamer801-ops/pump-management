@@ -48,6 +48,22 @@ export const requireAdmin = (req, _res, next) => {
   return next();
 };
 
+export const requireManagerAccount = (req, _res, next) => {
+  if (!req.user || req.user.accountType !== "manager") {
+    return next(forbidden("هذه العملية للمسؤول فقط.", "manager_only"));
+  }
+  return next();
+};
+
+/** المسؤول لا يصل إلا إلى المضخة التي يديرها فعليًا (§23) */
+export async function pumpForManager(pumpId, userId) {
+  const res = await q(`SELECT * FROM pumps WHERE id = $1`, [pumpId]);
+  if (res.rowCount === 0) throw notFound("المضخة غير موجودة.");
+  const pump = res.rows[0];
+  if (pump.manager_id !== userId) throw forbidden();
+  return pump;
+}
+
 /** العضوية المعتمدة فقط تمنح الوصول لبيانات المضخة — لا يكفي معرفة الكود (§17) */
 export async function membershipForUser(pumpId, userId) {
   const res = await q(

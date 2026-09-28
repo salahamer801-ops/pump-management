@@ -12,11 +12,18 @@ import {
   Wallet,
 } from "lucide-react";
 import { ShareholderProvider, useShareholder } from "./store";
+import { applyAppearance, watchSystemTheme } from "../domain/appearance";
 import { useAuth } from "../auth/AuthProvider";
-import { readManagerState, readUserLink } from "../domain/storage";
+import { readManagerState, readOfficialMeta, readUserLink } from "../domain/storage";
+import { SYNC_LABEL, myNotifications as filterMyNotifications, unreadNotifications } from "../domain/syncStatus";
 import { formatDateTime } from "../format";
 import { tr } from "./i18n";
 import { cx, Modal, Pill } from "../components/ui";
+import { BrandLogo } from "../components/Brand";
+import VerifyBanner from "../components/VerifyBanner";
+import { OfficialSyncProvider, useOfficialSync } from "./useOfficialSync";
+import { usePullToRefresh } from "./SyncPanel";
+import { markMyNotificationsRead } from "./officialSync";
 import HomeScreen from "./screens/HomeScreen";
 import PumpsScreen from "./screens/PumpsScreen";
 import CyclesScreen from "./screens/CyclesScreen";
@@ -36,48 +43,65 @@ function Shell({
 }) {
   const { state, actions } = useShareholder();
   const { session } = useAuth();
+  const sync = useOfficialSync();
   const [tab, setTab] = useState<Tab>("home");
   const [notifOpen, setNotifOpen] = useState(false);
-  /** السجل الرسمي للمضخة المرتبطة (قراءة فقط) — لإظهار اسم المضخة وكودها والتنبيهات */
-  const linkedPumpId =
-    (session?.memberships ?? []).find((m) => m.status === "approved")?.pumpId ?? null;
-  const linkedPersonId =
-    (session?.memberships ?? []).find((m) => m.status === "approved" && m.personId)?.personId ??
-    readUserLink();
+  /** المضخة المرتبطة المعتمدة من الخادم (اسم المضخة وكودها والتنبيهات) */
+  const approved = (session?.memberships ?? []).filter((m) => m.status === "approved");
+  const linkedPumpId = approved[0]?.pumpId ?? null;
+  const linkedPersonId = approved.find((m) => m.personId)?.personId ?? readUserLink();
   const [official, setOfficial] = useState(() => readManagerState(linkedPumpId));
+  /** الإشعارات التي قرأها هذا المستخدم بنفسه (علم شخصي على الخادم) */
+  const [readIds, setReadIds] = useState<string[]>(() =>
+    linkedPumpId ? readOfficialMeta(linkedPumpId).readNotificationIds : []
+  );
   const lang = state.settings.language;
   const t = (ar: string, en: string) => tr(lang, ar, en);
 
-  /* تحديث السجل الرسمي عند فتح أي تبويب — لا نداءات للخادم، قراءة من الجهاز */
+  /* تحديث السجل الرسمي عند فتح أي تبويب — قراءة من الجهاز (بلا نداءات) */
   const goTab = (id: Tab) => {
     setTab(id);
     setOfficial(readManagerState(linkedPumpId));
   };
 
+  /* كل وصول بيانات جديدة من الخادم (sync.tick) يُعيد قراءة السجل الرسمي وعلامات القراءة */
   useEffect(() => {
     setOfficial(readManagerState(linkedPumpId));
-  }, [linkedPumpId]);
+    setReadIds(linkedPumpId ? readOfficialMeta(linkedPumpId).readNotificationIds : []);
+  }, [linkedPumpId, sync.tick]);
+
+  /* السحب للأسفل للتحديث على الجوال */
+  usePullToRefresh(() => void sync.refresh(false));
 
   const pumpName = official?.pump?.name ?? null;
   const pumpCode = official?.pump?.pumpCode ?? null;
   /** تنبيهات المسؤول الموجّهة لي (أو العامة) — قراءة فقط، ولا تُحذف من هنا */
-  const myNotifications = useMemo(
-    () =>
-      (official?.notifications ?? [])
-        .filter((n) => !n.personId || (linkedPersonId && n.personId === linkedPersonId))
-        .slice(0, 60),
+  const mine = useMemo(
+    () => filterMyNotifications(official?.notifications, linkedPersonId).slice(0, 60),
     [official, linkedPersonId]
   );
-  const unread = myNotifications.filter((n) => !n.read).length;
+  const unread = unreadNotifications(official?.notifications, readIds, linkedPersonId).length;
 
-  // تطبيق الثيم واللغة على مستوى المستند
+  /** فتح التنبيهات = طّلاع: تُعلَّم مقروءة لي على الخادم (ولا تتأثّر قراءة غيري) */
+  const openNotifications = () => {
+    setNotifOpen(true);
+    const ids = mine.map((n) => n.id);
+    if (!linkedPumpId || ids.length === 0 || unread === 0) return;
+    void markMyNotificationsRead(linkedPumpId, ids).then(() => {
+      setReadIds(readOfficialMeta(linkedPumpId).readNotificationIds);
+    });
+  };
+
+  // تطبيق المظهر والكتابة واللغة على مستوى المستند
   useEffect(() => {
     const root = document.documentElement;
-    root.classList.toggle("dark", state.settings.theme === "dark");
+    applyAppearance(state.settings, root);
     root.setAttribute("dir", lang === "en" ? "ltr" : "rtl");
     root.setAttribute("lang", lang === "en" ? "en" : "ar");
-    return () => root.classList.remove("dark");
-  }, [state.settings.theme, lang]);
+    /* وضع «حسب الجهاز»: يبقى متابعًا لتغيّر وضع الجوال لحظيًا */
+    if (state.settings.theme !== "system") return;
+    return watchSystemTheme(() => applyAppearance(state.settings, root));
+  }, [state.settings, lang]);
 
   // نقل اسم الجلسة إلى الملف الشخصي عند أول دخول
   useEffect(() => {
@@ -102,9 +126,7 @@ function Shell({
       <header className="sticky top-0 z-30 border-b border-emerald-100/60 bg-white/80 backdrop-blur dark:border-slate-700 dark:bg-slate-900/80">
         <div className="mx-auto flex max-w-lg items-center justify-between px-4 py-3">
           <div className="flex items-center gap-2.5">
-            <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-gradient-to-br from-emerald-500 to-emerald-700 text-white shadow-md shadow-emerald-600/20">
-              <Droplets size={18} />
-            </div>
+            <BrandLogo size={38} />
             <div>
               <div className="text-sm font-black leading-tight text-gray-900 dark:text-white">
                 {pumpName ?? t("مشروع تنظيم المضخات", "Pump Organization")}
@@ -112,7 +134,7 @@ function Shell({
               <div className="text-xs text-gray-400 dark:text-slate-400">
                 {state.profile.name || t("مساهم", "Member")}
                 {pumpCode ? (
-                  <span className="mr-1 font-mono font-bold text-emerald-600 dark:text-emerald-400">
+                  <span className="mr-1 font-mono font-bold text-sky-600 dark:text-sky-400">
                     · {pumpCode}
                   </span>
                 ) : null}
@@ -120,22 +142,38 @@ function Shell({
             </div>
           </div>
 
-          <button
-            type="button"
-            onClick={() => setNotifOpen(true)}
-            aria-label={t("التنبيهات", "Alerts")}
-            data-testid="user-notifications"
-            className="relative rounded-full p-2 text-gray-500 hover:bg-gray-100 dark:text-slate-300 dark:hover:bg-slate-800"
-          >
+          <div className="flex items-center gap-2">
+            <span
+              className={cx(
+                "h-2.5 w-2.5 rounded-full",
+                sync.status === "synced"
+                  ? "bg-emerald-500"
+                  : sync.status === "offline"
+                    ? "bg-amber-500"
+                    : "bg-sky-400"
+              )}
+              title={SYNC_LABEL[sync.status]}
+              aria-label={SYNC_LABEL[sync.status]}
+              data-testid="sync-dot"
+            />
+            <button
+              type="button"
+              onClick={openNotifications}
+              aria-label={t("التنبيهات", "Alerts")}
+              data-testid="user-notifications"
+              className="relative rounded-full p-2 text-gray-500 hover:bg-gray-100 dark:text-slate-300 dark:hover:bg-slate-800"
+            >
             <Bell size={20} />
             {unread > 0 ? (
               <span className="absolute right-0 top-0 flex h-4 min-w-4 items-center justify-center rounded-full bg-red-500 px-1 text-[10px] font-bold text-white">
                 {unread}
               </span>
             ) : null}
-          </button>
+            </button>
+          </div>
         </div>
       </header>
+      <VerifyBanner />
 
       <main className="px-4 py-4">
         {tab === "home" && <HomeScreen onGoTo={goTab} />}
@@ -180,13 +218,13 @@ function Shell({
         onClose={() => setNotifOpen(false)}
         title={t("التنبيهات من المسؤول", "Alerts from the manager")}
       >
-        {myNotifications.length === 0 ? (
+        {mine.length === 0 ? (
           <p className="py-6 text-center text-sm text-gray-400">
             {t("لا توجد تنبيهات حاليًا.", "No alerts right now.")}
           </p>
         ) : (
           <div className="max-h-[60vh] space-y-2 overflow-y-auto" data-testid="user-notifications-list">
-            {myNotifications.map((n) => (
+            {mine.map((n) => (
               <div
                 key={n.id}
                 className={cx(
@@ -205,7 +243,7 @@ function Shell({
                     <Info size={14} className="text-sky-500" />
                   )}
                   {n.title}
-                  {!n.read ? (
+                  {!readIds.includes(n.id) ? (
                     <Pill tone="green" className="mr-auto">
                       {t("جديد", "New")}
                     </Pill>
@@ -219,8 +257,8 @@ function Shell({
         )}
         <p className="mt-3 text-center text-[10px] leading-relaxed text-gray-400">
           {t(
-            "التنبيهات تأتي من سجل المسؤول في هذا الجهاز — قراءة فقط.",
-            "Alerts come from the manager record on this device — read only."
+            "التنبيهات من مسؤول المضخة على الخادم الرسمي — قراءة فقط، و«جديد» يختفي بعد طّلاعك أنت.",
+            "Alerts come from the pump manager on the official server — read only, and “New” clears for you."
           )}
         </p>
       </Modal>
@@ -237,7 +275,9 @@ export default function ShareholderApp({
 }) {
   return (
     <ShareholderProvider>
-      <Shell onLogout={onLogout} userName={userName} />
+      <OfficialSyncProvider>
+        <Shell onLogout={onLogout} userName={userName} />
+      </OfficialSyncProvider>
     </ShareholderProvider>
   );
 }

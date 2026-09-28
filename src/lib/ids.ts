@@ -1,16 +1,17 @@
 /**
- * معرّفات محلية تُولَّد في المتصفح (بلا خادم): تُستخدم لتسمية العناصر قبل حفظها
- * على الخادم. لا علاقة لها بالمصادقة ولا بالصلاحيات.
+ * مولّدات المعرّفات — وحدات مساعدة بلا أي علاقة بالمصادقة.
+ * المصادقة والجلسة كلها على الخادم (`src/auth/AuthProvider.tsx` + `/api/auth/*`).
  */
+
 export function generateId(): string {
   return crypto.randomUUID();
 }
 
-/** رقم تعريف مضخة محلي بصيغة الخادم (PMP-XXXXXX) — يُستبدل برقم الخادم عند التسجيل */
+/** رقم تعريف المضخة الثابت (PMP-XXXXXX) — يُولَّد محليًا حتى تُسجَّل المضخة على الخادم */
 export function generatePumpCode(): string {
-  const chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
-  let code = "PMP-";
-  for (let i = 0; i < 6; i += 1) {
+  const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
+  let code = 'PMP-';
+  for (let i = 0; i < 6; i++) {
     code += chars.charAt(Math.floor(Math.random() * chars.length));
   }
   return code;

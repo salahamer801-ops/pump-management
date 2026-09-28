@@ -3,156 +3,32 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
-    <!-- لون شريط المتصفح يطابق شاشة البدء ثم يعود للون التطبيق (src/splash.ts) -->
-    <meta name="theme-color" content="#0a2440" />
-
-    <!-- أيقونة التطبيق -->
-    <link rel="icon" href="/favicon.ico" sizes="any" />
-    <link rel="icon" type="image/png" sizes="32x32" href="/favicon-32.png" />
-    <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
-    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="theme-color" content="#032a4c" />
+    <!-- يعمل كتطبيق مثبَّت على الجوال (بلا شريط متصفح) -->
     <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
     <meta name="apple-mobile-web-app-title" content="تنظيم المضخات" />
-
-    <!-- شعار شاشة البدء صغير (44KB) ومحفوظ في كاش التطبيق بعد أول زيارة -->
-    <link rel="preload" as="image" href="/brand/splash-logo.jpg" fetchpriority="high" />
-
+    <meta name="format-detection" content="telephone=no" />
+    <link rel="icon" type="image/png" sizes="192x192" href="/icons/icon-192.png" />
+    <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png" />
+    <link rel="manifest" href="/manifest.webmanifest" />
+    <meta property="og:image" content="/icons/icon-512.png" />
+    <meta property="og:title" content="مشروع تنظيم المضخات" />
+    <meta
+      property="og:description"
+      content="الديالات · الأدوار · الحصص · الحسابات — تطبيق تنظيم حصص المياه الزراعية."
+    />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link
       href="https://fonts.googleapis.com/css2?family=Cairo:wght@400;500;600;700;800;900&display=swap"
       rel="stylesheet"
     />
-
     <title>مشروع تنظيم المضخات</title>
-
-    <!-- صور بدء iOS: كل جهاز ينزّل الصورة المطابقة له فقط -->
-    <link rel="apple-touch-startup-image" media="(device-width: 430px) and (device-height: 932px) and (-webkit-device-pixel-ratio: 3)" href="/brand/startup-1290x2796.jpg" />
-    <link rel="apple-touch-startup-image" media="(device-width: 393px) and (device-height: 852px) and (-webkit-device-pixel-ratio: 3)" href="/brand/startup-1179x2556.jpg" />
-    <link rel="apple-touch-startup-image" media="(device-width: 428px) and (device-height: 926px) and (-webkit-device-pixel-ratio: 3)" href="/brand/startup-1284x2778.jpg" />
-    <link rel="apple-touch-startup-image" media="(device-width: 390px) and (device-height: 844px) and (-webkit-device-pixel-ratio: 3)" href="/brand/startup-1170x2532.jpg" />
-    <link rel="apple-touch-startup-image" media="(device-width: 375px) and (device-height: 812px) and (-webkit-device-pixel-ratio: 3)" href="/brand/startup-1125x2436.jpg" />
-    <link rel="apple-touch-startup-image" media="(device-width: 414px) and (device-height: 896px) and (-webkit-device-pixel-ratio: 3)" href="/brand/startup-1242x2688.jpg" />
-    <link rel="apple-touch-startup-image" media="(device-width: 414px) and (device-height: 896px) and (-webkit-device-pixel-ratio: 2)" href="/brand/startup-828x1792.jpg" />
-    <link rel="apple-touch-startup-image" media="(device-width: 375px) and (device-height: 667px) and (-webkit-device-pixel-ratio: 2)" href="/brand/startup-750x1334.jpg" />
-    <link rel="apple-touch-startup-image" media="(device-width: 1024px) and (device-height: 1366px) and (-webkit-device-pixel-ratio: 2)" href="/brand/startup-2048x2732.jpg" />
-    <link rel="apple-touch-startup-image" media="(device-width: 834px) and (device-height: 1194px) and (-webkit-device-pixel-ratio: 2)" href="/brand/startup-1668x2388.jpg" />
-
-    <style>
-      /* شاشة البدء: تُرسم فورًا مع أول صورة من الصفحة (بلا JS وبلا أي ملف إضافي) */
-      #app-splash {
-        position: fixed;
-        inset: 0;
-        z-index: 100;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        background: #0a2440;
-        transition: opacity 0.38s ease, visibility 0.38s ease;
-      }
-      #app-splash.is-hiding {
-        opacity: 0;
-        visibility: hidden;
-        pointer-events: none;
-      }
-      #app-splash.is-gone {
-        display: none;
-      }
-      .splash-inner {
-        display: flex;
-        flex-direction: column;
-        align-items: center;
-        text-align: center;
-        padding: 0 24px;
-        max-width: 420px;
-      }
-      .splash-logo {
-        width: min(72vw, 340px);
-        height: auto;
-        display: block;
-      }
-      .splash-title {
-        margin: 18px 0 0;
-        font-family: Cairo, ui-sans-serif, system-ui, sans-serif;
-        font-size: 23px;
-        font-weight: 800;
-        line-height: 1.4;
-        color: #ffffff;
-      }
-      .splash-sub {
-        margin: 6px 0 0;
-        font-family: Cairo, ui-sans-serif, system-ui, sans-serif;
-        font-size: 13px;
-        font-weight: 600;
-        line-height: 1.7;
-        color: #8fb8dc;
-      }
-      .splash-dots {
-        margin-top: 26px;
-        display: flex;
-        gap: 7px;
-      }
-      .splash-dots span {
-        width: 7px;
-        height: 7px;
-        border-radius: 9999px;
-        background: #7fb2e0;
-        opacity: 0.35;
-        animation: splash-pulse 1.05s ease-in-out infinite;
-      }
-      .splash-dots span:nth-child(2) {
-        animation-delay: 0.16s;
-      }
-      .splash-dots span:nth-child(3) {
-        animation-delay: 0.32s;
-      }
-      @keyframes splash-pulse {
-        0%,
-        100% {
-          opacity: 0.3;
-        }
-        50% {
-          opacity: 1;
-        }
-      }
-      @media (prefers-reduced-motion: reduce) {
-        .splash-dots span {
-          animation: none;
-          opacity: 0.7;
-        }
-      }
-    </style>
   </head>
   <body>
-    <div id="app-splash" role="status" aria-label="جارٍ تشغيل التطبيق">
-      <div class="splash-inner">
-        <img
-          class="splash-logo"
-          src="/brand/splash-logo.jpg"
-          width="512"
-          height="512"
-          alt=""
-          fetchpriority="high"
-          decoding="async"
-        />
-        <p class="splash-title">تنظيم المضخات</p>
-        <p class="splash-sub">إدارة حصص المياه الزراعية</p>
-        <div class="splash-dots" aria-hidden="true"><span></span><span></span><span></span></div>
-      </div>
-    </div>
     <div id="root"></div>
-    <script>
-      /* احتياط: لو تعطّل تحميل التطبيق لا تبقى شاشة البدء عالقة على الشاشة */
-      window.setTimeout(function () {
-        var el = document.getElementById("app-splash");
-        if (el && !el.classList.contains("is-hiding")) {
-          el.classList.add("is-hiding");
-          window.setTimeout(function () {
-            el.remove();
-          }, 400);
-        }
-      }, 9000);
-    </script>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>

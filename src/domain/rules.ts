@@ -4,6 +4,7 @@
  */
 import type {
   ActualUsage,
+  ShortfallReason,
   AppState,
   BaseRosterMember,
   Conflict,
@@ -22,11 +23,9 @@ import type {
   PaymentType,
   Person,
   Pump,
-  RightKind,
   RoyaltyPayMode,
   Shareholder,
   ShareholderUseStatus,
-  ShortfallReason,
   ShareRight,
   Transaction,
   TransferEvent,
@@ -35,21 +34,17 @@ import type {
   TxKind,
   UsageType,
 } from "./types";
-import { uid } from "./util";
+import {formatTimeAmPm, formatTimeRange, uid} from "./util";
 export type { DayIssueSeverity };
 
 import {
   addDaysISO,
   clamp,
   durationMin,
-  formatDuration,
   isOvernight,
   isoToShort,
   minutesToTime,
-  nowTime,
-  rawDurationMin,
   rangesOverlap,
-  timeInterval,
   timeToMinutes,
   toHours,
   todayISO,
@@ -66,11 +61,6 @@ export function personName(state: AppState, id: string | null): string {
   const p = findPerson(state, id);
   if (p) return p.name;
   return "—";
-}
-
-export function findShareholder(state: AppState, id: string | null): Shareholder | null {
-  if (!id) return null;
-  return state.shareholders.find((s) => s.id === id) ?? null;
 }
 
 export function activeShareholders(state: AppState, pumpId: string): Shareholder[] {
@@ -103,11 +93,6 @@ export function rightsOfShareholder(state: AppState, shareholderId: string): Sha
   return state.rights
     .filter((r) => r.shareholderId === shareholderId)
     .sort((a, b) => (a.startedAt < b.startedAt ? -1 : 1));
-}
-
-/** السلسلة الكاملة للحق — لا يُحفظ اسم صاحب الحق فقط */
-export function rightChain(state: AppState, shareholderId: string): ShareRight[] {
-  return rightsOfShareholder(state, shareholderId);
 }
 
 export function currentRight(
@@ -149,12 +134,6 @@ export function personPumpRelations(
   const usages = state.usages.filter((u) => u.pumpId === pumpId && u.personId === personId);
   if (usages.length > 0) tags.push({ label: "مستخدم سابق", tone: "gray" });
   return tags;
-}
-
-export function hasPendingRightPlan(state: AppState, personId: string, pumpId: string): boolean {
-  return state.rights.some(
-    (r) => r.holderPersonId === personId && r.pumpId === pumpId && r.status === "active"
-  );
 }
 
 /* --------------------------------- الأيام ------------------------------- */
@@ -353,52 +332,6 @@ export function scheduleRows(state: AppState, pump: Pump): ScheduleRow[] {
   });
 }
 
-/** بناء صفوف اليوم من الجدول الأساسي (نقطة بداية قابلة للتعديل بالكامل) */
-export function planEntriesFromSchedule(
-  state: AppState,
-  pump: Pump,
-  workStart: string,
-  workEnd: string
-): Omit<DayEntry, "dayId">[] {
-  const rows = scheduleRows(state, pump);
-  const window = durationMin(workStart, workEnd);
-  const units = rows.reduce((s, r) => s + r.units, 0) || 1;
-  const base = timeToMinutes(workStart);
-  let cursor = 0;
-  return rows.map((row, i) => {
-    const share = row.baseHoursMin > 0 ? row.baseHoursMin : Math.round(window * (row.units / units));
-    const start = base + cursor;
-    const end = base + cursor + share;
-    cursor += share;
-    const right = currentRight(state, row.shareholder.id);
-    return {
-      id: uid("en"),
-      pumpId: pump.id,
-      orderIndex: i,
-      personId: row.holderId,
-      role: right
-        ? right.kind === "rent"
-          ? "tenant"
-          : "right_holder"
-        : "shareholder",
-      shareholderId: row.shareholder.id,
-      rightId: right?.id ?? null,
-      startTime: minutesToTime(start),
-      endTime: minutesToTime(end),
-      plannedMin: share,
-      actualPersonId: null,
-      usageId: null,
-      status: "planned",
-      postponeToDayId: null,
-      reason: "",
-      notes: "",
-      createdAt: new Date().toISOString(),
-      createdBy: "manager",
-      archived: false,
-    };
-  });
-}
-
 /* ------------- كشف الدوام الأساسي (كشف واحد لكل ديالة، يُثبَّت) ------------- */
 
 export interface BaseRosterRow {
@@ -504,53 +437,6 @@ export function baseRosterTimeline(
   });
 }
 
-/**
- * بناء صفوف **الدوام الفعلي** لليوم من كشف ديالته: بالتسلسل من بداية تشغيل اليوم
- * وبمدة نصيب كل شخص. كشف فارغ ⇒ لا صفوف تُبنى.
- */
-export function planEntriesFromBaseRoster(
-  state: AppState,
-  pump: Pump,
-  day: DialaDay
-): Omit<DayEntry, "dayId">[] {
-  const base = timeToMinutes(day.workStart);
-  let cursor = 0;
-  return baseRosterRows(state, day.roundId ?? null).map((row, index) => {
-    const share = row.shareMin > 0 ? row.shareMin : 0;
-    const shareholder = shareholderOfPerson(state, pump.id, row.personId);
-    const right = shareholder ? currentRight(state, shareholder.id) : null;
-    const start = base + cursor;
-    cursor += share;
-    return {
-      id: uid("en"),
-      pumpId: pump.id,
-      orderIndex: index,
-      personId: row.personId,
-      role: right
-        ? right.kind === "rent"
-          ? "tenant"
-          : "right_holder"
-        : shareholder
-          ? "shareholder"
-          : row.role ?? "guest",
-      shareholderId: shareholder?.id ?? null,
-      rightId: right?.id ?? null,
-      startTime: minutesToTime(start),
-      endTime: minutesToTime(start + share),
-      plannedMin: share,
-      actualPersonId: null,
-      usageId: null,
-      status: "planned",
-      postponeToDayId: null,
-      reason: "",
-      notes: "",
-      createdAt: new Date().toISOString(),
-      createdBy: "manager",
-      archived: false,
-    };
-  });
-}
-
 /** هل هذا الشخص في كشف ديالة هذا اليوم؟ */
 export function isBaseRosterPerson(
   state: AppState,
@@ -561,30 +447,6 @@ export function isBaseRosterPerson(
   return (state.roster ?? []).some(
     (r) => r.roundId === roundId && r.personId === personId && !r.archived
   );
-}
-
-/** ملخص يوم داخل الديالة: عدد أساسيي الكشف ومجموع نصيبهم (الكشف واحد لكل الأيام) */
-export interface RosterDaySummary {
-  day: DialaDay;
-  dayNumber: number;
-  membersCount: number;
-  totalMin: number;
-  names: string[];
-}
-
-export function rosterDaySummaries(state: AppState, roundId: string): RosterDaySummary[] {
-  const rows = baseRosterRows(state, roundId);
-  const totalMin = rows.reduce((sum, r) => sum + (r.shareMin || 0), 0);
-  return roundDays(state, roundId, true)
-    .slice()
-    .sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0))
-    .map((day) => ({
-      day,
-      dayNumber: dayNumberInRound(state, day),
-      membersCount: rows.length,
-      totalMin,
-      names: rows.map((r) => r.name),
-    }));
 }
 
 /**
@@ -793,26 +655,40 @@ export function dayIssues(state: AppState, day: DialaDay, pump: Pump): DayIssue[
     };
   });
 
-  // تداخل غير مقصود — لا يُحذف أي سجل تلقائيًا
-  for (let i = 0; i < intervals.length; i++) {
-    for (let j = i + 1; j < intervals.length; j++) {
-      const a = intervals[i];
-      const b = intervals[j];
-      if (!a.hasTimes || !b.hasTimes) continue;
-      const overlap = rangesOverlap({ from: a.from, to: a.to }, { from: b.from, to: b.to });
-      if (overlap > 0) {
-        const key = `overlap-${a.entry.id}-${b.entry.id}`;
-        issues.push({
-          kind: "overlap",
-          severity: "warn",
-          key,
-          message: `تداخل في أوقات الاستخدام بين ${personName(state, a.entry.personId)} و${personName(
-            state,
-            b.entry.personId
-          )} (${Math.round(overlap)} دقيقة).`,
-          entryIds: [a.entry.id, b.entry.id],
-        });
-      }
+  /*
+   * تداخل الصفوف — من المحرّك الواحد `scheduleConflicts` (نفس ما يمنع الإدخال
+   * الجديد ويُعرض في نوافذ التعديل)، مع إزالة التكرار لأن كل فترة تُفحص مرتين.
+   */
+  const seenOverlap = new Set<string>();
+  for (const interval of intervals) {
+    if (!interval.hasTimes) continue;
+    const found = scheduleConflicts(state, day, pump, {
+      startTime: interval.entry.startTime,
+      endTime: interval.entry.endTime,
+      personId: interval.entry.personId,
+      entryId: interval.entry.id,
+    }).filter((c) => c.kind === "overlap" && c.otherId);
+    for (const conflict of found) {
+      const pair = [interval.entry.id, conflict.otherId!].sort();
+      const key = `overlap-${pair[0]}-${pair[1]}`;
+      if (seenOverlap.has(key)) continue;
+      seenOverlap.add(key);
+      const other = intervals.find((x) => x.entry.id === conflict.otherId);
+      issues.push({
+        kind: "overlap",
+        severity: "warn",
+        key,
+        message: overlapNotice(
+          personName(state, interval.entry.personId),
+          interval.entry.startTime,
+          interval.entry.endTime,
+          personName(state, other?.entry.personId ?? ""),
+          other?.entry.startTime ?? "",
+          other?.entry.endTime ?? "",
+          conflict.overlapMin ?? 0
+        ),
+        entryIds: [interval.entry.id, conflict.otherId!],
+      });
     }
   }
 
@@ -855,7 +731,7 @@ export function dayIssues(state: AppState, day: DialaDay, pump: Pump): DayIssue[
         kind: "outside_window",
         severity: "warn",
         key: `outside-${e.id}`,
-        message: `${personName(state, e.personId)}: الوقت خارج نافذة تشغيل المضخة (${window.start} → ${window.end}).`,
+        message: `${personName(state, e.personId)}: الوقت خارج نافذة تشغيل المضخة (${formatTimeRange(window.start, window.end)}).`,
         entryIds: [e.id],
       });
     }
@@ -899,13 +775,15 @@ export function dayIssues(state: AppState, day: DialaDay, pump: Pump): DayIssue[
           kind: "overlap",
           severity: "warn",
           key: `usage-overlap-${a.usage.id}-${b.usage.id}`,
-          message: `تداخل في الاستخدام الفعلي بين ${personName(
-            state,
-            a.usage.personId
-          )} (${a.usage.startTime} → ${a.usage.endTime}) و${personName(
-            state,
-            b.usage.personId
-          )} (${b.usage.startTime} → ${b.usage.endTime}) بمقدار ${Math.round(overlap)} دقيقة.`,
+          message: overlapNotice(
+            personName(state, a.usage.personId),
+            a.usage.startTime,
+            a.usage.endTime,
+            personName(state, b.usage.personId),
+            b.usage.startTime,
+            b.usage.endTime,
+            Math.round(overlap)
+          ),
           entryIds: [],
         });
       }
@@ -986,7 +864,7 @@ export function daySummary(state: AppState, day: DialaDay, pump: Pump): DaySumma
   const entries = dayEntries(state, day.id).filter((e) => e.status !== "cancelled");
   const usages = state.usages.filter((u) => u.dayId === day.id && u.status === "active");
   const window = pumpWindow(pump, day);
-  const plannedMin = entries.reduce((s, e) => s + entryMinutes(e), 0);
+  const plannedMin = distributedMinutes(state, day);
   const usageMin = usages.reduce((s, u) => s + u.minutes, 0);
   const liters = usages.reduce((s, u) => s + u.fuelLiters, 0);
   const personalFuelCost = usages.reduce(
@@ -1068,19 +946,12 @@ export function computeUsageDraft(
   const minutes = durationMin(startTime, endTime);
   const window = pumpWindow(pump, day);
   const hours = toHours(minutes);
-  const liters =
-    pump.energyType === "solar"
-      ? 0
-      : pump.fuelCalcMode === "cycle"
-        ? window.capacityMin > 0
-          ? Math.round(pump.fuelPerCycle * (minutes / window.capacityMin) * 100) / 100
-          : 0
-        : Math.round(hours * pump.fuelConsumptionPerHour * 100) / 100;
+  const liters = fuelLitersFor(minutes, pump, window.capacityMin);
   const referencePrice = pump.fuelPrice || 0;
   const personalPrice = Math.max(0, opts.personalFuelPrice ?? 0);
   /** السعر المستخدم للعملية: السعر الشخصي أولًا، والمرجعي بديلًا (§9) */
   const usedPrice = personalPrice > 0 ? personalPrice : referencePrice;
-  const fuelCost = Math.round(liters * usedPrice);
+  const fuelCost = fuelCostFor(liters, usedPrice);
   const royalty =
     !pump.royaltyEnabled
       ? 0
@@ -1103,6 +974,33 @@ export function computeUsageDraft(
     royaltyAmountDue: royalty,
     stoppageMin: Math.max(0, Math.round(opts.stoppageMin ?? 0)),
   };
+}
+
+/**
+ * لترات الوقود لفترة: تُحسب بطريقة المضخة (ساعة أو دورة أو شمسية).
+ * مصدر واحد لكل من النظام الرسمي وسجل المساهم الشخصي.
+ */
+export function fuelLitersFor(
+  minutes: number,
+  pump: {
+    energyType?: "solar" | "diesel" | "hybrid";
+    fuelCalcMode?: "hour" | "cycle";
+    fuelPerCycle?: number;
+    fuelConsumptionPerHour?: number;
+  },
+  capacityMin = 0
+): number {
+  if (pump.energyType === "solar") return 0;
+  if (pump.fuelCalcMode === "cycle") {
+    const perCycle = pump.fuelPerCycle ?? 0;
+    return capacityMin > 0 ? Math.round(perCycle * (minutes / capacityMin) * 100) / 100 : 0;
+  }
+  return Math.round(toHours(Math.max(0, minutes)) * (pump.fuelConsumptionPerHour ?? 0) * 100) / 100;
+}
+
+/** قيمة الوقود = اللترات × سعر اللتر (مصدر واحد) */
+export function fuelCostFor(liters: number, pricePerLiter: number): number {
+  return Math.round(Math.max(0, liters) * Math.max(0, pricePerLiter));
 }
 
 export function usageTypeLabel(t: UsageType): string {
@@ -1156,58 +1054,6 @@ export function useStatusTone(status: ShareholderUseStatus): "green" | "amber" |
   }
 }
 
-/** هل هذه الحالة تحتاج تسجيل طرف آخر (مستأجر أو مالك جديد)؟ */
-export function useStatusNeedsCounterpart(status: ShareholderUseStatus): boolean {
-  return status !== "continuing";
-}
-
-/** نوع العلاقة المسجّل في سجل الحقوق مقابل حالة الاستخدام */
-export function useStatusRightKind(status: ShareholderUseStatus): RightKind {
-  return status === "rented" ? "rent" : "transfer";
-}
-
-/** الطرف الآخر للمساهم: المستأجر / المالك الجديد / المتنازل له */
-export function shareholderCounterpart(
-  state: AppState,
-  sh: Shareholder
-): { person: Person; phone: string } | null {
-  const person = findPerson(state, sh.counterpartPersonId ?? null);
-  if (!person) return null;
-  return { person, phone: sh.counterpartPhone || person.phone };
-}
-
-/**
- * المساهمون الأساسيون المرتبطون بمضخة ومَن يستخدم سهمهم الآن
- * — سجل مرجعي ثابت لا يتأثر بترتيب اليوم الفعلي.
- */
-export interface ShareholderUsageRow {
-  shareholder: Shareholder;
-  person: Person | null;
-  status: ShareholderUseStatus;
-  counterpart: Person | null;
-  counterpartPhone: string;
-  activeRight: ShareRight | null;
-  currentHolder: Person | null;
-}
-
-export function shareholderUsageRows(state: AppState, pumpId: string): ShareholderUsageRow[] {
-  return activeShareholders(state, pumpId).map((sh) => {
-    const status = shareholderUseStatus(sh);
-    const counterpart = findPerson(state, sh.counterpartPersonId ?? null);
-    const activeRight = currentRight(state, sh.id);
-    const holderId = activeRight ? activeRight.holderPersonId : sh.personId;
-    return {
-      shareholder: sh,
-      person: findPerson(state, sh.personId),
-      status,
-      counterpart,
-      counterpartPhone: sh.counterpartPhone || counterpart?.phone || "",
-      activeRight,
-      currentHolder: findPerson(state, holderId),
-    };
-  });
-}
-
 /* ------------------- تسديد الديزل والرواسة لكل مستخدم (§21-24) --------- */
 
 export const DIESEL_SETTLEMENT_OPTIONS: {
@@ -1222,12 +1068,16 @@ export const DIESEL_SETTLEMENT_OPTIONS: {
 
 export const ROYALTY_MODE_OPTIONS: { id: RoyaltyPayMode; label: string; action: string }[] = [
   { id: "cash", label: "نقد", action: "رواسة مدفوعة نقدًا — لا دين" },
-  { id: "credit", label: "أجل", action: "رواسة آجلة — تُسجَّل دينًا" },
-  { id: "partial", label: "جزء نقد وجزء أجل", action: "دفع جزءًا نقدًا ويبقى الباقي دينًا عليه" },
+  { id: "credit", label: "أجل", action: "رواسة آجلة — تُسجَّل دينًا كاملًا" },
+  {
+    id: "partial",
+    label: "جزء نقد وجزء أجل",
+    action: "يُسجَّل الاستحقاق كاملًا، ويُسدَّد الجزء النقدي، والباقي يبقى دَينًا",
+  },
 ];
 
-/** أسباب نقص نصيب المشارك عن أساسه في كشف الديالة */
-export const SHORTFALL_REASON_OPTIONS: { id: Exclude<ShortfallReason, "">; label: string }[] = [
+/** أسباب نقص نصيب المشارك عن نصيبه في الكشف */
+export const SHORTFALL_REASON_OPTIONS: { id: ShortfallReason; label: string }[] = [
   { id: "loan", label: "سلف" },
   { id: "remaining", label: "ما تبقى" },
   { id: "transfer", label: "ناقل" },
@@ -1236,7 +1086,6 @@ export const SHORTFALL_REASON_OPTIONS: { id: Exclude<ShortfallReason, "">; label
 ];
 
 export function shortfallReasonLabel(v?: ShortfallReason | null): string {
-  if (!v) return "";
   return SHORTFALL_REASON_OPTIONS.find((o) => o.id === v)?.label ?? "";
 }
 
@@ -1245,22 +1094,17 @@ export function dieselSettlementLabel(v: DieselSettlement): string {
 }
 
 export function royaltyModeLabel(v: RoyaltyPayMode): string {
-  return ROYALTY_MODE_OPTIONS.find((o) => o.id === v)?.label ?? "أجل";
+  if (v === "cash") return "نقد";
+  if (v === "partial") return "جزء نقد وجزء أجل";
+  return "أجل";
 }
 
-/** المبلغ المدفوع فعلًا من قيمة الديزل: ما سجّله المسؤول، وإلا يُستنتج من حالة التسديد */
-export function dieselPaidOf(usage: ActualUsage): number {
-  const due = Math.round(usage.fuelAmountDue || 0);
-  const explicit = Math.round(usage.dieselPaidAmount || 0);
-  if (explicit > 0) return clamp(explicit, 0, due);
-  const mode = usage.dieselSettlement ?? "unpaid";
-  if (mode === "paid") return due;
-  if (mode === "shortage") return Math.max(0, due - shortageAmountOf(usage));
-  return 0;
-}
-
-/** الجزء المدفوع نقدًا من الرواسة */
-export function royaltyCashOf(usage: ActualUsage): number {
+/** الجزء النقدي المدفوع من الرواسة (والآجل يبقى دَينًا) */
+export function royaltyCashPartOf(usage: {
+  royaltyPayMode?: RoyaltyPayMode;
+  royaltyAmountDue?: number;
+  royaltyCashAmount?: number;
+}): number {
   const due = Math.round(usage.royaltyAmountDue || 0);
   const mode = usage.royaltyPayMode ?? "credit";
   if (mode === "cash") return due;
@@ -1268,11 +1112,393 @@ export function royaltyCashOf(usage: ActualUsage): number {
   return 0;
 }
 
+/**
+ * الجزء الآجل من الرواسة (يبقى دَينًا) — يُقرأ من القيمة المحفوظة وقت التسجيل،
+ * فإن كانت غير مسجّلة (سجل قديم) يُحسب من المستحق ناقص الجزء النقدي.
+ */
+export function royaltyDeferredPartOf(usage: {
+  royaltyPayMode?: RoyaltyPayMode;
+  royaltyAmountDue?: number;
+  royaltyCashAmount?: number;
+  royaltyDeferredAmount?: number;
+}): number {
+  const due = Math.round(usage.royaltyAmountDue || 0);
+  const stored = Math.round(usage.royaltyDeferredAmount || 0);
+  if (stored > 0) return Math.min(stored, due);
+  return Math.max(0, due - royaltyCashPartOf(usage));
+}
+
+/** الجزء المدفوع فعلًا من قيمة الديزل */
+/** وسم حالة السهم: مؤاجر/مباع/مناقل — للمعلومة فقط في بطاقة العرض */
+export function shareUseNote(
+  state: AppState,
+  pumpId: string,
+  personId: string,
+  date = todayISO()
+): { label: string; holder: string } | null {
+  const shareholder = shareholderOfPerson(state, pumpId, personId);
+  if (!shareholder) return null;
+  const right = currentRight(state, shareholder.id, date);
+  if (right && right.holderPersonId !== personId) {
+    const label =
+      right.kind === "rent"
+        ? "مؤاجر"
+        : right.kind === "transfer"
+          ? "مناقل"
+          : right.kind === "loan"
+            ? "معار"
+            : right.kind === "gift"
+              ? "موهوب"
+              : right.kind === "inherit"
+                ? "إرث"
+                : "حق قائم";
+    return { label, holder: findPerson(state, right.holderPersonId)?.name ?? "—" };
+  }
+  if (shareholder.useStatus === "sold") return { label: "مباع", holder: "" };
+  if (shareholder.useStatus === "rented") return { label: "مؤاجر", holder: "" };
+  if (shareholder.useStatus === "transferred") return { label: "مناقل", holder: "" };
+  return null;
+}
+
+/* ------------------- ترتيب اليوم: النافذة والفراغات والتعارضات ------------- */
+
+/** فترات اليوم المحجوزة فعلًا (صفوف الترتيب + الاستخدامات المسجّلة) */
+export interface DayInterval {
+  id: string;
+  kind: "entry" | "usage";
+  personId: string;
+  personName: string;
+  /** منسوبة إلى بداية نافذة تشغيل اليوم بالدقائق */
+  startMin: number;
+  endMin: number;
+  startTime: string;
+  endTime: string;
+}
+
+export interface DayTimeline {
+  startTime: string;
+  endTime: string;
+  capacityMin: number;
+  /** مجموع ما وُزِّع على المشاركين */
+  distributedMin: number;
+  /** ما تبقّى من نافذة التشغيل */
+  remainingMin: number;
+  /** أول فراغ زمني متاح (أو null إن امتلأ اليوم) */
+  nextGap: { startTime: string; minutes: number } | null;
+  intervals: DayInterval[];
+}
+
+/** إزاحة الوقت داخل نافذة اليوم: 06:00 = 0 و18:00 = 720 (وتعمل مع الليل) */
+export function offsetInWindow(time: string, windowStartMin: number): number {
+  const diff = timeToMinutes(time) - windowStartMin;
+  return ((diff % 1440) + 1440) % 1440;
+}
+
+/**
+ * فترات اليوم المحجوزة — مصدر واحد للترتيب الزمني في كل الشاشات.
+ * الصفوف المؤرشفة والملغاة لا تُحسب، وكذلك الاستخدامات الملغاة.
+ */
+export function dayIntervals(
+  state: AppState,
+  day: DialaDay,
+  pump: Pump,
+  opts: { ignoreEntryId?: string | null } = {}
+): DayInterval[] {
+  const window = pumpWindow(pump, day);
+  const windowStart = timeToMinutes(window.start);
+  const out: DayInterval[] = [];
+  for (const entry of dayEntries(state, day.id)) {
+    if (opts.ignoreEntryId && entry.id === opts.ignoreEntryId) continue;
+    if (entry.status === "cancelled") continue;
+    const minutes = entryMinutes(entry);
+    if (minutes <= 0) continue;
+    const startMin = offsetInWindow(entry.startTime, windowStart);
+    out.push({
+      id: entry.id,
+      kind: "entry",
+      personId: entry.actualPersonId ?? entry.personId,
+      personName: findPerson(state, entry.actualPersonId ?? entry.personId)?.name ?? "—",
+      startMin,
+      endMin: startMin + minutes,
+      startTime: entry.startTime,
+      endTime: entry.endTime,
+    });
+  }
+  const linked = new Set(dayEntries(state, day.id).map((e) => e.usageId).filter(Boolean) as string[]);
+  for (const usage of state.usages) {
+    if (usage.dayId !== day.id || usage.status !== "active") continue;
+    if (linked.has(usage.id)) continue;
+    if (usage.minutes <= 0) continue;
+    const startMin = offsetInWindow(usage.startTime, windowStart);
+    out.push({
+      id: usage.id,
+      kind: "usage",
+      personId: usage.personId,
+      personName: findPerson(state, usage.personId)?.name ?? "—",
+      startMin,
+      endMin: startMin + usage.minutes,
+      startTime: usage.startTime,
+      endTime: usage.endTime,
+    });
+  }
+  return out.sort((a, b) => a.startMin - b.startMin || a.endMin - b.endMin);
+}
+
+/** شريط اليوم: النافذة · الموزَّع · المتبقي · أول فراغ متاح */
+export function dayTimeline(state: AppState, day: DialaDay, pump: Pump): DayTimeline {
+  const window = pumpWindow(pump, day);
+  const intervals = dayIntervals(state, day, pump);
+  const distributedMin = distributedMinutes(state, day);
+  const capacityMin = window.capacityMin;
+
+  let cursor = 0;
+  for (const interval of intervals) {
+    if (interval.startMin > cursor) break;
+    cursor = Math.max(cursor, interval.endMin);
+  }
+  const nextGap =
+    cursor < capacityMin
+      ? {
+          startTime: minutesToTime(timeToMinutes(window.start) + cursor),
+          minutes: Math.max(
+            0,
+            Math.min(
+              ...intervals.filter((i) => i.startMin >= cursor).map((i) => i.startMin - cursor),
+              capacityMin - cursor
+            )
+          ),
+        }
+      : null;
+
+  return {
+    startTime: window.start,
+    endTime: window.end,
+    capacityMin,
+    distributedMin,
+    remainingMin: Math.max(0, capacityMin - distributedMin),
+    nextGap,
+    intervals,
+  };
+}
+
+/** البداية المقترحة للمشارك التالي = نهاية آخر مشارك أو أول فراغ متاح */
+export function nextAvailableStart(state: AppState, day: DialaDay, pump: Pump): string {
+  const window = pumpWindow(pump, day);
+  const intervals = dayIntervals(state, day, pump);
+  let cursor = 0;
+  for (const interval of intervals) {
+    if (interval.startMin > cursor) break;
+    cursor = Math.max(cursor, interval.endMin);
+  }
+  const offset = Math.min(cursor, Math.max(0, window.capacityMin - 1));
+  return minutesToTime(timeToMinutes(window.start) + offset);
+}
+
+export type ScheduleConflictKind = "zero" | "window" | "overlap" | "duplicate";
+
+export interface ScheduleConflict {
+  kind: ScheduleConflictKind;
+  message: string;
+  /** معرّف الفترة المتعارضة (صف أو استخدام) — لبناء مفاتيح ثابتة للإقرار */
+  otherId?: string;
+  otherName?: string;
+  /** مقدار التداخل بالدقائق (للتداخل والتكرار) */
+  overlapMin?: number;
+  /** الوقت البديل المقترح لتجاوز التعارض */
+  suggestedStart?: string;
+  suggestedEnd?: string;
+}
+
+/** صيغة واحدة لعرض أي تداخل زمني في كل الشاشات والبطاقات */
+export function overlapNotice(
+  aName: string,
+  aStart: string,
+  aEnd: string,
+  bName: string,
+  bStart: string,
+  bEnd: string,
+  minutes: number
+): string {
+  return `تداخل بين ${aName} (${formatTimeRange(aStart, aEnd)}) و${bName} (${formatTimeRange(bStart, bEnd)}) بمقدار ${minutes} دقيقة.`;
+}
+
+/**
+ * فحص الترتيب الزمني قبل الإدخال — منع لا تسجيل:
+ * لا مدة صفرية، ولا خروج عن نافذة تشغيل اليوم، ولا تداخل، ولا تكرار لنفس الشخص.
+ * المنع يخصّ الإدخال الجديد؛ التعارض القديم يبقى معروضًا بمسار «تجاوز بسبب موثّق».
+ */
+export function scheduleConflicts(
+  state: AppState,
+  day: DialaDay,
+  pump: Pump,
+  draft: {
+    startTime: string;
+    endTime: string;
+    personId: string;
+    entryId?: string | null;
+    usageId?: string | null;
+  }
+): ScheduleConflict[] {
+  const out: ScheduleConflict[] = [];
+  const window = pumpWindow(pump, day);
+  const windowStart = timeToMinutes(window.start);
+  const windowEnd = windowStart + window.capacityMin;
+  const minutes = durationMin(draft.startTime, draft.endTime);
+  const startMin = offsetInWindow(draft.startTime, windowStart);
+  const endMin = startMin + minutes;
+  const endClock = minutesToTime(timeToMinutes(draft.startTime) + minutes);
+
+  if (minutes <= 0) {
+    out.push({
+      kind: "zero",
+      message: "المدة صفر — لا بد أن تكون النهاية بعد البداية.",
+      suggestedStart: minutesToTime(timeToMinutes(draft.startTime) + 1),
+      suggestedEnd: minutesToTime(timeToMinutes(draft.startTime) + 61),
+    });
+    return out;
+  }
+
+  if (endMin > window.capacityMin) {
+    const fixStart = Math.max(1, window.capacityMin - minutes);
+    out.push({
+      kind: "window",
+      message: `الفترة تخرج عن نافذة تشغيل اليوم (${formatTimeRange(window.start, window.end)}) — تنتهي عند ${formatTimeAmPm(endClock)}.`,
+      suggestedStart: minutesToTime(windowStart + fixStart),
+      suggestedEnd: minutesToTime(windowEnd),
+    });
+  }
+
+  const intervals = dayIntervals(state, day, pump, { ignoreEntryId: draft.entryId ?? null });
+  for (const interval of intervals) {
+    if (interval.kind === "usage" && draft.usageId && interval.id === draft.usageId) continue;
+    if (interval.startMin < endMin && startMin < interval.endMin) {
+      const samePerson = interval.personId === draft.personId;
+      const overlapMin = Math.round(Math.min(endMin, interval.endMin) - Math.max(startMin, interval.startMin));
+      out.push({
+        kind: samePerson ? "duplicate" : "overlap",
+        otherId: interval.id,
+        otherName: interval.personName,
+        overlapMin,
+        message: samePerson
+          ? `${interval.personName} مسجَّل في فترة متقاطعة ${formatTimeRange(interval.startTime, interval.endTime)} (تداخل ${overlapMin} دقيقة).`
+          : overlapNotice(
+              interval.personName,
+              interval.startTime,
+              interval.endTime,
+              "الفترة الجديدة",
+              draft.startTime,
+              endClock,
+              overlapMin
+            ),
+        suggestedStart: minutesToTime(windowStart + interval.endMin),
+        suggestedEnd: minutesToTime(windowStart + interval.endMin + minutes),
+      });
+    }
+  }
+  return out;
+}
+
+/** صف «دور» في يوم فعلي — حساب واحد يستخدمه كل من يعرض أدوار اليوم */
+export interface DayTurnRow {
+  entryId: string;
+  personId: string;
+  name: string;
+  units: number;
+  hours: number;
+  startTime: string;
+  endTime: string;
+  usedMin: number;
+  plannedMin: number;
+  remainingMin: number;
+  shortageLiters: number;
+  tone: "green" | "blue" | "gray";
+  label: string;
+}
+
+/**
+ * صفوف أدوار اليوم الفعلي: من أخذ ماءه، المتبقي من نصيبه، ونقص ديزله.
+ * مصدر واحد بدل حساب مكرّر داخل شاشة الرئيسية.
+ */
+export function dayTurnRows(state: AppState, day: DialaDay | null, pumpId: string): DayTurnRow[] {
+  if (!day) return [];
+  const dayUsages = state.usages.filter((u) => u.dayId === day.id && u.status === "active");
+  const closed = day.status === "closed" || day.status === "completed";
+  return sortedEntriesByTime(dayEntries(state, day.id)).map((entry) => {
+    const personId = entry.actualPersonId ?? entry.personId;
+    const usage =
+      dayUsages.find((u) => u.entryId === entry.id) ??
+      dayUsages.find((u) => !u.entryId && u.personId === personId) ??
+      null;
+    const shareholder = shareholderOfPerson(state, pumpId, entry.personId);
+    const usedMin = usage?.minutes ?? 0;
+    const plannedMin = entry.plannedMin || entryMinutes(entry);
+    const remainingMin = Math.max(0, plannedMin - usedMin);
+    const shortageLiters = usage
+      ? Math.max(0, usage.dieselShortageLiters || 0)
+      : dayUsages
+          .filter((u) => u.personId === personId)
+          .reduce((sum, u) => sum + Math.max(0, u.dieselShortageLiters || 0), 0);
+    const pill = usage
+      ? remainingMin > 0
+        ? { tone: "green" as const, label: "جارٍ الآن" }
+        : { tone: "green" as const, label: "تم الدور" }
+      : closed
+        ? { tone: "gray" as const, label: "لم يُسجَّل" }
+        : { tone: "blue" as const, label: "اليوم" };
+    return {
+      entryId: entry.id,
+      personId,
+      name: personName(state, personId),
+      units: shareholder?.units ?? 1,
+      hours: toHours(plannedMin),
+      startTime: entry.startTime,
+      endTime: entry.endTime,
+      usedMin,
+      plannedMin,
+      remainingMin,
+      shortageLiters,
+      tone: pill.tone,
+      label: pill.label,
+    };
+  });
+}
+
+/** مجموع ساعات اليوم المخطّطة (الموزَّع) — مصدر واحد للشريط وبطاقة اليوم */
+export function distributedMinutes(state: AppState, day: DialaDay): number {
+  return dayEntries(state, day.id)
+    .filter((e) => e.status !== "cancelled")
+    .reduce((sum, e) => sum + entryMinutes(e), 0);
+}
+
+/** ترتيب صفوف اليوم زمنيًا (بالساعة لا بترتيب الإدخال) */
+export function sortedEntriesByTime(entries: DayEntry[]): DayEntry[] {
+  return entries
+    .slice()
+    .sort((a, b) => timeToMinutes(a.startTime) - timeToMinutes(b.startTime) || a.orderIndex - b.orderIndex);
+}
+
+export function dieselPaidPartOf(usage: {
+  fuelAmountDue?: number;
+  dieselSettlement?: DieselSettlement;
+  dieselShortageLiters?: number;
+  dieselPaidAmount?: number;
+  fuelPriceSnapshot?: number;
+}): number {
+  const due = Math.round(usage.fuelAmountDue || 0);
+  const mode = usage.dieselSettlement ?? "unpaid";
+  if (mode === "paid") return due;
+  if (mode === "shortage") {
+    const explicit = Math.round(usage.dieselPaidAmount || 0);
+    return explicit > 0 ? clamp(explicit, 0, due) : Math.max(0, due - shortageAmountOf(usage));
+  }
+  return 0;
+}
+
 /** قيمة نقص الديزل المحسوبة من اللترات بسعر العملية (Snapshot) */
 export function shortageAmountOf(usage: {
-  dieselShortageLiters: number;
-  fuelPriceSnapshot: number;
-  fuelAmountDue: number;
+  dieselShortageLiters?: number;
+  fuelPriceSnapshot?: number;
+  fuelAmountDue?: number;
 }): number {
   const raw = Math.round((usage.dieselShortageLiters || 0) * (usage.fuelPriceSnapshot || 0));
   return clamp(raw, 0, Math.round(usage.fuelAmountDue || 0));
@@ -1315,17 +1541,13 @@ export function settlementPostings(usage: ActualUsage): SettlementPosting[] {
         notes: usage.settlementNote || "",
       });
     } else if (diesel === "shortage") {
-      const paidPart = dieselPaidOf(usage);
+      const paidPart = dieselPaidPartOf(usage);
       if (paidPart > 0) {
-        const shortage = Math.max(0, fuelDue - paidPart);
         out.push({
           kind: "payment",
           direction: "credit",
           amount: paidPart,
-          reason:
-            shortage > 0
-              ? `سداد جزئي — نقص ${usage.dieselShortageLiters} لتر`
-              : "سداد ديزل نقدًا",
+          reason: `سداد جزئي — نقص ${usage.dieselShortageLiters} لتر`,
           notes: usage.settlementNote || "",
         });
       }
@@ -1333,26 +1555,24 @@ export function settlementPostings(usage: ActualUsage): SettlementPosting[] {
   }
 
   if (royaltyDue > 0) {
-    const cashPart = royaltyCashOf(usage);
     out.push({
       kind: "royalty",
       direction: "debit",
       amount: royaltyDue,
-      reason:
-        royaltyMode === "credit"
-          ? "رواسة آجلة (دين)"
-          : royaltyMode === "partial"
-            ? "استحقاق رواسة (جزء نقد وجزء أجل)"
-            : "استحقاق رواسة",
+      reason: royaltyMode === "credit" ? "رواسة آجلة (دين)" : "استحقاق رواسة",
       notes: usage.settlementNote || "",
     });
+    const cashPart = royaltyCashPartOf(usage);
     if (cashPart > 0) {
       out.push({
         kind: "payment",
         direction: "credit",
         amount: cashPart,
-        reason: royaltyMode === "partial" ? "سداد جزء من الرواسة نقدًا" : "سداد رواسة نقدًا",
-        notes: usage.settlementNote || "",
+        reason:
+          royaltyMode === "partial"
+            ? `سداد رواسة — الجزء النقدي (والباقي ${Math.round(royaltyDue - cashPart)} دَين)`
+            : "سداد رواسة نقدًا",
+        notes: royaltyMode === "partial" ? usage.shortfallNote || usage.settlementNote || "" : "",
       });
     }
   }
@@ -1375,6 +1595,7 @@ export interface DaySettlementTotals {
   royaltyCredit: number;
   cashCount: number;
   creditCount: number;
+  partialCount: number;
 }
 
 /** ملخص تسديدات اليوم: ديزل مسدد/نقص/غير مسدد ورواسة نقد/أجل */
@@ -1395,6 +1616,7 @@ export function daySettlementTotals(state: AppState, dayId: string): DaySettleme
     royaltyCredit: 0,
     cashCount: 0,
     creditCount: 0,
+    partialCount: 0,
   };
   for (const u of usages) {
     const diesel = u.dieselSettlement ?? "unpaid";
@@ -1406,10 +1628,11 @@ export function daySettlementTotals(state: AppState, dayId: string): DaySettleme
       totals.dieselPaid += fuelDue;
     } else if (diesel === "shortage") {
       totals.shortageCount += 1;
-      const short = shortageAmountOf(u);
+      const paidPart = dieselPaidPartOf(u);
+      const short = Math.max(0, fuelDue - paidPart);
       totals.shortageLiters += u.dieselShortageLiters || 0;
       totals.shortageAmount += short;
-      totals.dieselPaid += fuelDue - short;
+      totals.dieselPaid += paidPart;
       totals.dieselOwed += short;
     } else {
       totals.unpaidCount += 1;
@@ -1420,6 +1643,11 @@ export function daySettlementTotals(state: AppState, dayId: string): DaySettleme
     if (mode === "cash") {
       totals.cashCount += 1;
       totals.royaltyCash += royaltyDue;
+    } else if (mode === "partial") {
+      totals.partialCount += 1;
+      const cashPart = royaltyCashPartOf(u);
+      totals.royaltyCash += cashPart;
+      totals.royaltyCredit += Math.max(0, royaltyDue - cashPart);
     } else {
       totals.creditCount += 1;
       totals.royaltyCredit += royaltyDue;
@@ -1691,61 +1919,6 @@ export function matchStatusLabel(s: CompareRow["status"]): string {
 
 /* ----------------------- دور الشخص: الحالي والقادم --------------------- */
 
-export interface PersonTurnInfo {
-  day: DialaDay;
-  entry: DayEntry;
-  isCurrent: boolean;
-}
-
-export function personTurns(state: AppState, personId: string): PersonTurnInfo[] {
-  const list: PersonTurnInfo[] = [];
-  for (const day of sortedDays(state)) {
-    for (const entry of dayEntries(state, day.id)) {
-      const owner = entry.actualPersonId ?? entry.personId;
-      if (owner === personId || entry.personId === personId) {
-        list.push({ day, entry, isCurrent: day.date === todayISO() });
-      }
-    }
-  }
-  return list;
-}
-
-export function personCurrentTurn(state: AppState, personId: string): PersonTurnInfo | null {
-  const now = nowTime();
-  const today = todayISO();
-  const turns = personTurns(state, personId);
-  const todayTurn = turns.find((t) => t.day.date === today && t.entry.status !== "cancelled");
-  if (todayTurn) return todayTurn;
-  const timeNow = timeToMinutes(now);
-  const live = turns.find(
-    (t) =>
-      t.day.date === today &&
-      t.entry.status !== "cancelled" &&
-      t.entry.startTime &&
-      timeToMinutes(t.entry.startTime) <= timeNow &&
-      timeNow < timeToMinutes(t.entry.startTime) + entryMinutes(t.entry)
-  );
-  return live ?? null;
-}
-
-export function personNextTurn(state: AppState, personId: string): PersonTurnInfo | null {
-  const today = todayISO();
-  const future = personTurns(state, personId)
-    .filter((t) => t.day.date > today && t.entry.status !== "cancelled")
-    .sort((a, b) => (a.day.date < b.day.date ? -1 : 1));
-  return future[0] ?? null;
-}
-
-export function remainingMinutesForEntry(entry: DayEntry): number {
-  if (entry.status === "done") return 0;
-  const minutes = entryMinutes(entry);
-  if (entry.startTime) {
-    const elapsed = durationMin(entry.startTime, nowTime());
-    return Math.max(0, minutes - elapsed);
-  }
-  return minutes;
-}
-
 /* -------------------------------- إشعارات ------------------------------ */
 
 export function unreadNotifications(state: AppState) {
@@ -1757,25 +1930,6 @@ export function notificationTone(level: "info" | "warn" | "danger") {
 }
 
 /* --------------------------- تقارير ومساعدات --------------------------- */
-
-export function groupBy<T>(list: T[], key: (item: T) => string): Map<string, T[]> {
-  const map = new Map<string, T[]>();
-  for (const item of list) {
-    const k = key(item);
-    const arr = map.get(k) ?? [];
-    arr.push(item);
-    map.set(k, arr);
-  }
-  return map;
-}
-
-export function formatHoursLabel(min: number): string {
-  return `${toHours(min)} س`;
-}
-
-export function dayCapacity(min: number, total: number): number {
-  return clamp(Math.round((min / (total || 1)) * 100), 0, 100);
-}
 
 export function isoRangeDays(fromISO: string, toISO: string): string[] {
   const out: string[] = [];
@@ -1821,7 +1975,8 @@ export interface UsageOverlap {
 }
 
 /**
- * كشف تداخل فترة جديدة مع الاستخدامات المسجّلة في اليوم (§7).
+ * كشف تداخل فترة جديدة مع فترات اليوم المسجّلة (§7) — **واجهة رقيقة فوق المحرّك
+ * الواحد** `scheduleConflicts`، فلا تختلف النتيجة بين شاشة وأخرى.
  * لا يحذف ولا يعدّل أي سجل — يعيد قائمة التعارضات للعرض والتأكيد فقط.
  */
 export function overlapsFor(
@@ -1830,288 +1985,23 @@ export function overlapsFor(
   pump: Pump,
   startTime: string,
   endTime: string,
-  ignoreUsageId: string | null = null
+  ignoreUsageId: string | null = null,
+  personId = ""
 ): UsageOverlap[] {
-  const window = pumpWindow(pump, day);
-  const anchor = timeToMinutes(window.start);
-  const candidate = entryInterval(anchor, startTime, endTime, window.capacityMin);
-  const out: UsageOverlap[] = [];
-  for (const u of state.usages) {
-    if (u.dayId !== day.id || u.status !== "active" || u.id === ignoreUsageId) continue;
-    const span = entryInterval(anchor, u.startTime, u.endTime, window.capacityMin);
-    const overlap = Math.round(rangesOverlap(candidate, span));
-    if (overlap > 0) {
-      out.push({
-        usageId: u.id,
-        personId: u.personId,
-        personName: personName(state, u.personId),
-        startTime: u.startTime,
-        endTime: u.endTime,
-        minutes: overlap,
-      });
-    }
-  }
-  return out;
-}
-
-/* ------------- دوام اليوم: الترتيب الزمني، الفراغات، ومنع التعارض --------- */
-
-/** فترة مشغولة داخل اليوم (صف أو استخدام) بإحداثيات نافذة التشغيل */
-interface OccupiedSpan {
-  kind: "entry" | "usage";
-  id: string;
-  personId: string;
-  personName: string;
-  startTime: string;
-  endTime: string;
-  from: number;
-  to: number;
-  minutes: number;
-}
-
-/** موضع البداية داخل نافذة التشغيل بالدقائق (يدعم نافذة تعبر منتصف الليل) */
-function windowOffset(anchorMin: number, time: string): number {
-  return (((timeToMinutes(time) - anchorMin) % 1440) + 1440) % 1440;
-}
-
-function occupiedSpans(
-  state: AppState,
-  day: DialaDay,
-  pump: Pump,
-  ignore: { ignoreEntryId?: string | null; ignoreUsageId?: string | null } = {}
-): OccupiedSpan[] {
-  const window = pumpWindow(pump, day);
-  const anchor = timeToMinutes(window.start);
-  const out: OccupiedSpan[] = [];
-  const push = (
-    kind: "entry" | "usage",
-    id: string,
-    personId: string,
-    startTime: string,
-    endTime: string
-  ) => {
-    const minutes = durationMin(startTime, endTime);
-    if (minutes <= 0) return;
-    const from = windowOffset(anchor, startTime);
-    out.push({ kind, id, personId, personName: personName(state, personId), startTime, endTime, from, to: from + minutes, minutes });
-  };
-  for (const e of state.entries) {
-    if (e.dayId !== day.id || e.archived || e.status === "cancelled") continue;
-    if (ignore.ignoreEntryId && e.id === ignore.ignoreEntryId) continue;
-    push("entry", e.id, e.personId, e.startTime, e.endTime);
-  }
-  /* الاستخدام المرتبط بصف موجود لا يُحتسب مرتين: الصف يمثّل الفترة نفسها */
-  const entryIds = new Set(out.filter((s) => s.kind === "entry").map((s) => s.id));
-  const linkedIds = new Set(
-    state.usages
-      .filter((u) => u.dayId === day.id && u.status === "active" && u.entryId && entryIds.has(u.entryId))
-      .map((u) => u.id)
-  );
-  for (const u of state.usages) {
-    if (u.dayId !== day.id || u.status !== "active") continue;
-    if (ignore.ignoreUsageId && u.id === ignore.ignoreUsageId) continue;
-    if (linkedIds.has(u.id)) continue;
-    push("usage", u.id, u.personId, u.startTime, u.endTime);
-  }
-  return out.sort((a, b) => a.from - b.from || a.to - b.to);
-}
-
-/** صف موحّد لعرض دوام اليوم: الصف ومعه استخدامه إن وُجد، أو استخدام بلا صف */
-export interface DaySpanRow {
-  key: string;
-  entry: DayEntry | null;
-  usage: ActualUsage | null;
-  personId: string;
-  personName: string;
-  startTime: string;
-  endTime: string;
-  minutes: number;
-  from: number;
-  to: number;
-  role: EntryRole;
-  fromBaseRoster: boolean;
-}
-
-/** صفوف دوام اليوم مرتّبة زمنيًا من بداية التشغيل إلى نهايته */
-export function daySpanRows(state: AppState, day: DialaDay, pump: Pump): DaySpanRow[] {
-  const window = pumpWindow(pump, day);
-  const anchor = timeToMinutes(window.start);
-  const entries = state.entries.filter((e) => e.dayId === day.id && !e.archived && e.status !== "cancelled");
-  const byEntry = new Map<string, ActualUsage>();
-  const orphans: ActualUsage[] = [];
-  const entryIds = new Set(entries.map((e) => e.id));
-  for (const u of state.usages) {
-    if (u.dayId !== day.id || u.status !== "active") continue;
-    if (u.entryId && entryIds.has(u.entryId) && !byEntry.has(u.entryId)) byEntry.set(u.entryId, u);
-    else if (!u.entryId || !entryIds.has(u.entryId)) orphans.push(u);
-  }
-  const rows: DaySpanRow[] = [];
-  const add = (entry: DayEntry | null, usage: ActualUsage | null, personId: string, startTime: string, endTime: string, role: EntryRole) => {
-    const minutes = durationMin(startTime, endTime);
-    const from = windowOffset(anchor, startTime);
-    rows.push({
-      key: entry ? entry.id : `usage-${usage?.id ?? uid("sp")}`,
-      entry,
-      usage,
-      personId,
-      personName: personName(state, personId),
-      startTime,
-      endTime,
-      minutes,
-      from,
-      to: from + minutes,
-      role,
-      fromBaseRoster: isBaseRosterPerson(state, day.roundId ?? null, personId),
+  return scheduleConflicts(state, day, pump, { startTime, endTime, personId, usageId: ignoreUsageId })
+    .filter((c) => c.kind === "overlap" && c.otherId)
+    .map((c) => {
+      const other = state.usages.find((u) => u.id === c.otherId) ??
+        state.entries.find((e) => e.id === c.otherId);
+      return {
+        usageId: c.otherId ?? "",
+        personId: other?.personId ?? "",
+        personName: c.otherName ?? "—",
+        startTime: other?.startTime ?? "",
+        endTime: other?.endTime ?? "",
+        minutes: c.overlapMin ?? 0,
+      };
     });
-  };
-  for (const e of entries) add(e, byEntry.get(e.id) ?? null, e.personId, e.startTime, e.endTime, e.role);
-  for (const u of orphans) add(null, u, u.personId, u.startTime, u.endTime, "other");
-  return rows.sort((a, b) => a.from - b.from || a.to - b.to);
-}
-
-export interface FreeGap {
-  from: number;
-  to: number;
-  minutes: number;
-  startTime: string;
-  endTime: string;
-}
-
-/** الفراغات الزمنية المتاحة في يوم التشغيل (بعد دمج الصفوف والاستخدامات) */
-export function dayFreeGaps(
-  state: AppState,
-  day: DialaDay,
-  pump: Pump,
-  ignore: { ignoreEntryId?: string | null; ignoreUsageId?: string | null } = {}
-): FreeGap[] {
-  const window = pumpWindow(pump, day);
-  const anchor = timeToMinutes(window.start);
-  const spans = occupiedSpans(state, day, pump, ignore)
-    .map((s) => ({ from: clamp(s.from, 0, window.capacityMin), to: clamp(s.to, 0, window.capacityMin) }))
-    .filter((s) => s.to > s.from)
-    .sort((a, b) => a.from - b.from);
-  const gaps: { from: number; to: number; minutes: number }[] = [];
-  let cursor = 0;
-  for (const s of spans) {
-    if (s.from > cursor) gaps.push({ from: cursor, to: s.from, minutes: s.from - cursor });
-    cursor = Math.max(cursor, s.to);
-  }
-  if (cursor < window.capacityMin) {
-    gaps.push({ from: cursor, to: window.capacityMin, minutes: window.capacityMin - cursor });
-  }
-  return gaps.map((g) => ({
-    ...g,
-    startTime: minutesToTime(anchor + g.from),
-    endTime: minutesToTime(anchor + g.to),
-  }));
-}
-
-/** أول فراغ يستوعب مدة مطلوبة (لا يعبر حدّ نافذة اليوم) */
-export function firstFreeSlot(
-  state: AppState,
-  day: DialaDay,
-  pump: Pump,
-  wantMin: number,
-  ignore: { ignoreEntryId?: string | null; ignoreUsageId?: string | null } = {}
-): FreeGap | null {
-  const need = Math.max(0, Math.round(wantMin));
-  const gaps = dayFreeGaps(state, day, pump, ignore);
-  return gaps.find((g) => g.minutes >= (need > 0 ? need : 1)) ?? null;
-}
-
-export interface SpanConflict {
-  kind: "entry" | "usage";
-  id: string;
-  personId: string;
-  personName: string;
-  startTime: string;
-  endTime: string;
-  minutes: number;
-}
-
-export interface SpanCheck {
-  minutes: number;
-  crossesMidnight: boolean;
-  conflicts: SpanConflict[];
-  /** دقائق خارج نافذة تشغيل اليوم */
-  outsideMin: number;
-  errors: string[];
-  ok: boolean;
-  /** أول فراغ متاح بعد هذه الفترة */
-  nextFree: FreeGap | null;
-}
-
-/**
- * تحقق صارم لفترة داخل يوم التشغيل (§7):
- * تداخل مع أي صف/استخدام + خروج عن نافذة اليوم + مدة صفرية ⇒ لا يُسمح بالحفظ.
- */
-export function checkDaySpan(
-  state: AppState,
-  day: DialaDay,
-  pump: Pump,
-  startTime: string,
-  endTime: string,
-  ignore: { ignoreEntryId?: string | null; ignoreUsageId?: string | null; ignorePersonEverywhere?: boolean } = {}
-): SpanCheck {
-  const window = pumpWindow(pump, day);
-  const anchor = timeToMinutes(window.start);
-  /* المدى الصفري (بداية = نهاية) مدة صفر لا 24 ساعة */
-  const minutes = rawDurationMin(startTime, endTime) === 0 ? 0 : durationMin(startTime, endTime);
-  const from = windowOffset(anchor, startTime);
-  const to = from + minutes;
-  const outsideMin = Math.max(0, Math.round(to - window.capacityMin));
-  const conflicts: SpanConflict[] = [];
-  for (const s of occupiedSpans(state, day, pump, ignore)) {
-    const overlap = Math.round(rangesOverlap({ from, to }, { from: s.from, to: s.to }));
-    if (overlap > 0) {
-      conflicts.push({
-        kind: s.kind,
-        id: s.id,
-        personId: s.personId,
-        personName: s.personName,
-        startTime: s.startTime,
-        endTime: s.endTime,
-        minutes: overlap,
-      });
-    }
-  }
-  const errors: string[] = [];
-  if (minutes <= 0) {
-    errors.push("المدة يجب أن تكون أكبر من صفر — راجع وقت البداية والنهاية.");
-  }
-  if (outsideMin > 0) {
-    errors.push(
-      `الفترة تخرج عن نافذة تشغيل اليوم (${window.start} → ${window.end}) بمقدار ${formatDuration(outsideMin)} — عدّل الوقت ليبقى داخل الدوام.`
-    );
-  }
-  if (conflicts.length > 0) {
-    errors.push(
-      `تعارض في الوقت مع ${conflicts.length} ${conflicts.length === 1 ? "فترة" : "فترات"} مسجّلة: ` +
-        conflicts
-          .slice(0, 3)
-          .map((c) => `${c.personName} (${c.startTime} → ${c.endTime})`)
-          .join(" · ") +
-        (conflicts.length > 3 ? " …" : "")
-    );
-  }
-  return {
-    minutes,
-    crossesMidnight: isOvernight(startTime, endTime),
-    conflicts,
-    outsideMin,
-    errors,
-    ok: errors.length === 0,
-    nextFree: firstFreeSlot(state, day, pump, minutes),
-  };
-}
-
-/** نصيب الشخص في كشف ديالة اليوم (0 = ليس في الكشف) */
-export function baseShareMinFor(state: AppState, roundId: string | null, personId: string): number {
-  if (!roundId) return 0;
-  const member = (state.roster ?? []).find(
-    (r) => r.roundId === roundId && r.personId === personId && !r.archived
-  );
-  return member?.shareMin ?? 0;
 }
 
 export interface CapacityBreakdown {
@@ -2160,16 +2050,6 @@ export function capacityBreakdown(
     liters: Math.round(usages.reduce((s, u) => s + u.fuelLiters, 0) * 10) / 10,
     currency: pump.currency,
   };
-}
-
-/** تكلفة الديزل المحفوظة داخل العملية (Snapshot) */
-export function usageFuelCost(u: ActualUsage): number {
-  return Math.round(u.fuelCost ?? u.fuelAmountDue ?? 0);
-}
-
-/** هل سجّل المستخدم سعرًا شخصيًا لهذه العملية؟ */
-export function hasPersonalFuelPrice(u: ActualUsage): boolean {
-  return (u.personalFuelPriceSnapshot ?? 0) > 0;
 }
 
 /* ------------------ الدفعات والديون (§12, §13) ------------------------- */
@@ -2460,8 +2340,8 @@ export function detectConflicts(state: AppState): DetectedConflict[] {
             personId: a.personId,
             officialRecordId: a.id,
             personalRecordId: null,
-            officialValue: `${personName(state, a.personId)}: ${a.startTime} → ${a.endTime}`,
-            personalValue: `${personName(state, b.personId)}: ${b.startTime} → ${b.endTime}`,
+            officialValue: `${personName(state, a.personId)}: ${formatTimeRange(a.startTime, a.endTime)}`,
+            personalValue: `${personName(state, b.personId)}: ${formatTimeRange(b.startTime, b.endTime)}`,
             difference: `${overlap} دقيقة تداخل`,
             differenceValue: -overlap,
             unit: "minutes",
@@ -2600,5 +2480,3 @@ export function conflictStatusLabel(s: ConflictStatus): string {
       return "قائم";
   }
 }
-
-export { rawDurationMin, timeInterval };

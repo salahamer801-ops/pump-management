@@ -1,27 +1,31 @@
 import { useEffect, useState } from "react";
-import { Droplets, Megaphone } from "lucide-react";
+import { Megaphone } from "lucide-react";
 import { AuthProvider, useAuth } from "./auth/AuthProvider";
-import LoginScreen from "./screens/LoginScreen";
+import ServerLoginScreen from "./screens/LoginScreen";
 import ManagerShell from "./manager/ManagerShell";
 import ShareholderApp from "./shareholder/ShareholderApp";
 import AdminApp from "./admin/AdminApp";
-import { clearLegacySession, clearLocalModeAuth } from "./session";
-import { hideSplash } from "./splash";
+import { BrandSplash } from "./components/Brand";
+import { UpdateNotice } from "./components/UpdateNotice";
+import { clearLegacySession } from "./session";
+
 
 /**
- * الباب الأمامي للتطبيق: حساب حقيقي على الخادم فقط.
- * لا يوجد وضع محلي — الهوية من رمز الجلسة في قاعدة البيانات، والبيانات من الخادم.
+ * الباب الوحيد للتطبيق: الحساب الحقيقي على الخادم (رقم الهاتف + كلمة المرور).
+ * لا وجود لوضع محلي ولا لتسجيل حساب في المتصفح — الحسابات والعضويات والبيانات
+ * كلها على الخادم في PostgreSQL عبر `/api`.
  */
 export default function App() {
   useEffect(() => {
-    /* بقايا الجلسة القديمة (الاسم فقط) وبقايا حسابات الوضع المحلي المحذوف */
+    /* الجلسة القديمة (الاسم فقط) لم تكن هوية — تُزال عند أول تشغيل */
     clearLegacySession();
-    clearLocalModeAuth();
   }, []);
 
   return (
     <AuthProvider>
       <Root />
+      {/* إشعار النسخة الجديدة — يظهر في كل الشاشات فوق الشريط السفلي */}
+      <UpdateNotice />
     </AuthProvider>
   );
 }
@@ -31,31 +35,14 @@ function Root() {
   /** فتح لوحة مسؤول النظام — لمن يدير مضخة أيضًا يبقى تطبيقه الأساسي */
   const [adminPanel, setAdminPanel] = useState(false);
 
-  /* انتهى التحقق من الجلسة: أَخفِ شاشة البدء واترك التطبيق يظهر */
-  useEffect(() => {
-    if (!loading) hideSplash();
-  }, [loading]);
-
   if (loading) {
-    return (
-      <div className="flex min-h-screen items-center justify-center">
-        <div className="text-center">
-          <div className="mx-auto mb-3 flex h-16 w-16 animate-pulse items-center justify-center rounded-3xl bg-gradient-to-br from-emerald-500 to-emerald-700 text-white">
-            <Droplets size={28} />
-          </div>
-          <p className="text-sm font-bold text-gray-500">جارٍ التحقق…</p>
-        </div>
-      </div>
-    );
+    /* شاشة البدء: يملأ الشعار الشاشة أثناء التحقق من الحساب */
+    return <BrandSplash />;
   }
 
-  /* بلا جلسة: شاشة الدخول الحقيقية (تسجيل · دخول · استعادة كلمة المرور) */
+  /* بلا حساب: شاشة الدخول/إنشاء الحساب على الخادم — لا شيء غيرها */
   if (!session) {
-    return (
-      <div className="min-h-screen bg-gray-50">
-        <LoginScreen />
-      </div>
-    );
+    return <ServerLoginScreen />;
   }
 
   const announcement = session.announcement;
@@ -155,3 +142,4 @@ function AnnouncementBar({ tone, text }: { tone: "info" | "warn" | "danger"; tex
     </div>
   );
 }
+

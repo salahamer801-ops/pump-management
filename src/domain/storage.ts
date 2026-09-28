@@ -62,6 +62,37 @@ export function readManagerState(pumpId?: string | null): AppState | null {
 }
 
 /**
+ * ارتباط الحساب بالشخص صلاحيته من الخادم (موافقة المسؤول على العضوية).
+ * المفتاح المحلي ليس صلاحية: هو فقط «أيّ شخص في بيانات هذا الجهاز أستعرض سجله»
+ * ويُستخدم بديلًا للعرض عند غياب عضوية معتمدة — قراءة فقط، بلا أي وصول لبيانات غيرك.
+ */
+/**
+ * كل سجلات المضخات المحفوظة على هذا الجهاز (بلا تكرار).
+ * تُستخدم لعرض مضخات الوضع المحلي في تطبيق المستخدم — قراءة فقط.
+ */
+export function localManagerStates(): AppState[] {
+  const seen = new Set<string>();
+  const out: AppState[] = [];
+  const push = (state: AppState | null) => {
+    if (!state?.pump) return;
+    if (seen.has(state.pump.id)) return;
+    seen.add(state.pump.id);
+    out.push(state);
+  };
+  push(readManagerState(null));
+  try {
+    for (let i = 0; i < localStorage.length; i += 1) {
+      const key = localStorage.key(i);
+      if (!key || !key.startsWith(`${MANAGER_STORAGE_KEY}::`)) continue;
+      push(readManagerState(key.slice(MANAGER_STORAGE_KEY.length + 2)));
+    }
+  } catch {
+    /* ignore */
+  }
+  return out;
+}
+
+/**
  * ذاكرة البيانات الرسمية القادمة من الخادم (cache، وليست مصدرًا).
  * المصدر الرسمي هو PostgreSQL — هذه مجرد نسخة تُعرض للمستخدم على جهازه
  * (وتتيح للمساهم رؤية بيانات المضخة الرسمية من أي جهاز).
@@ -78,6 +109,69 @@ export function saveOfficialState(pumpId: string, state: AppState): void {
   } catch {
     /* ignore */
   }
+}
+
+export function readOfficialState(pumpId: string): AppState | null {
+  try {
+    return parseManagerState(localStorage.getItem(officialStorageKey(pumpId)));
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * بيانات المزامنة الرسمية على هذا الجهاز: رقم نسخة الخادم التي نزلت، وقت آخر
+ * تحديث ناجح، والإشعارات التي قرأها هذا المستخدم — لتُختصر النداءات وتظهر
+ * «آخر تحديث» وشارة «جديد» بلا انتظار.
+ */
+const OFFICIAL_META_PREFIX = "pump-org-official-meta::";
+
+export interface OfficialMeta {
+  version: number;
+  syncedAt: string | null;
+  readNotificationIds: string[];
+}
+
+function officialMetaKey(pumpId: string): string {
+  return `${OFFICIAL_META_PREFIX}${pumpId}`;
+}
+
+export function readOfficialMeta(pumpId: string): OfficialMeta {
+  const empty: OfficialMeta = { version: 0, syncedAt: null, readNotificationIds: [] };
+  try {
+    const raw = localStorage.getItem(officialMetaKey(pumpId));
+    if (!raw) return empty;
+    const parsed = JSON.parse(raw) as Partial<OfficialMeta>;
+    return {
+      version: Number(parsed.version) || 0,
+      syncedAt: typeof parsed.syncedAt === "string" ? parsed.syncedAt : null,
+      readNotificationIds: Array.isArray(parsed.readNotificationIds)
+        ? parsed.readNotificationIds.filter((x): x is string => typeof x === "string")
+        : [],
+    };
+  } catch {
+    return empty;
+  }
+}
+
+export function saveOfficialMeta(pumpId: string, patch: Partial<OfficialMeta>): OfficialMeta {
+  const next: OfficialMeta = { ...readOfficialMeta(pumpId), ...patch };
+  try {
+    localStorage.setItem(officialMetaKey(pumpId), JSON.stringify(next));
+  } catch {
+    /* ignore */
+  }
+  return next;
+}
+
+/** أحدث وقت تحديث ناجح بين كل المضخات المرتبطة (للمؤشر العام) */
+export function latestOfficialSyncAt(pumpIds: readonly string[]): string | null {
+  let best: string | null = null;
+  for (const id of pumpIds) {
+    const at = readOfficialMeta(id).syncedAt;
+    if (at && (!best || at > best)) best = at;
+  }
+  return best;
 }
 
 export function readUserLink(): string | null {
@@ -97,3 +191,10 @@ export function saveUserLink(personId: string | null): void {
   }
 }
 
+export function clearLegacyUserLink(): void {
+  try {
+    localStorage.removeItem(USER_LINK_KEY);
+  } catch {
+    /* ignore */
+  }
+}

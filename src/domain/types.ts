@@ -22,7 +22,13 @@ export interface SoftDeletable {
 
 export type Currency = "YER" | "SAR" | "USD";
 export type EnergyType = "solar" | "diesel" | "hybrid";
-export type Theme = "light" | "dark";
+export type Theme = "light" | "dark" | "system";
+/** قوة كتابة النصوص: عادي · قوي · قوي جدًا (تباين أعلى للقراءة في الشمس وعلى الشاشات الباهتة) */
+export type TextStrength = "normal" | "strong" | "max";
+/** لون التمييز: الأزرار والعناوين والعناصر الفعّالة */
+export type AccentColor = "brand" | "teal" | "violet" | "amber";
+/** حجم الكتابة العام في التطبيق */
+export type FontSize = "sm" | "md" | "lg" | "xl";
 export type Language = "ar" | "en";
 
 export type FuelCalcMode = "hour" | "cycle";
@@ -276,13 +282,12 @@ export interface DayEntry extends SoftDeletable {
   postponeToDayId: ID | null;
   reason: string;
   notes: string;
-  /** سبب نقص نصيبه في هذا اليوم عن أساسه في الكشف (سلف/ما تبقى/ناقل/باع/آخر) */
-  shortfallReason?: ShortfallReason;
-  /** تفصيل سبب النقص — نص حر يكتبه المسؤول */
-  shortfallNote?: string;
   createdAt: string;
   createdBy: string;
   archived: boolean;
+  /** سبب تقليل نصيب المشارك عن نصيبه في الكشف (يوم هذا اليوم فقط) */
+  shortfallReason?: ShortfallReason;
+  shortfallNote?: string;
 }
 
 /* ---------------------------- الاستخدام الفعلي -------------------------- */
@@ -292,14 +297,14 @@ export type UsageType = "share" | "rental" | "loan" | "purchase" | "extra" | "gu
 /** هل سدّد المستخدم قيمة الديزل أم لا أم هناك نقص؟ */
 export type DieselSettlement = "paid" | "shortage" | "unpaid";
 
-/** سداد رسوم الرواسة: نقد أو أجل أو جزء نقد وجزء أجل */
+/** سداد رسوم الرواسة: نقد · أجل · جزء نقد وجزء أجل */
 export type RoyaltyPayMode = "cash" | "credit" | "partial";
 
 /**
- * سبب نقص نصيب المشارك في يوم التشغيل عن أساسه في كشف الديالة:
- * سلف · ما تبقى · ناقل · باع · آخر — يُخزَّن مع الصف ليُعرف سبب الفرق.
+ * سبب نقص نصيب المشارك عن أساسه: سلف (loan) · ما تبقى (remaining) ·
+ * ناقل (transfer) · باع (sold) · آخر (other)
  */
-export type ShortfallReason = "loan" | "remaining" | "transfer" | "sold" | "other" | "";
+export type ShortfallReason = "loan" | "remaining" | "transfer" | "sold" | "other";
 
 export interface ActualUsage extends SoftDeletable {
   id: ID;
@@ -338,14 +343,14 @@ export interface ActualUsage extends SoftDeletable {
   dieselSettlement: DieselSettlement;
   /** نقص الديزل باللتر (عند اختيار «نقص») */
   dieselShortageLiters: number;
-  /** المبلغ الذي دفعه الشخص فعلًا من قيمة الديزل (0 = لم يُسجَّل → يُستنتج من حالة التسديد) */
+  /** المبلغ المدفوع فعلًا من قيمة الديزل (0 = يُحسب من الحالة) */
   dieselPaidAmount?: number;
   royaltyPayMode: RoyaltyPayMode;
-  /** عند «جزء نقد وجزء أجل»: المبلغ المدفوع نقدًا من الرواسة */
+  /** عند «جزء نقد وجزء أجل»: المبلغ النقدي المدفوع */
   royaltyCashAmount?: number;
-  /** عند «جزء نقد وجزء أجل»: المبلغ الباقي أجلًا */
+  /** عند «جزء نقد وجزء أجل»: المبلغ الآجل الباقي دَينًا */
   royaltyDeferredAmount?: number;
-  /** سبب نقص نصيب هذا المشارك في اليوم (يُنسخ من الصف إلى العملية) */
+  /** سبب نقص نصيب المشارك عن أساسه (يُحفظ على العملية والصف) */
   shortfallReason?: ShortfallReason;
   shortfallNote?: string;
   settlementNote: string;
@@ -851,6 +856,12 @@ export interface AppSettings {
   language: Language;
   deviceId: string;
   lastSyncAt: string;
+  /** قوة كتابة النصوص (تباين أعلى إن كانت الشاشة باهتة) */
+  textStrength: TextStrength;
+  /** لون التمييز في الواجهة */
+  accent: AccentColor;
+  /** حجم الكتابة العام */
+  fontSize: FontSize;
 }
 
 export interface AppState {

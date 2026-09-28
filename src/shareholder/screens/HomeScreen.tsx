@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useMemo } from "react";
 import {
   BadgeCheck,
   CalendarClock,
@@ -18,17 +18,20 @@ import {
 import { useShareholder } from "../store";
 import { useAuth } from "../../auth/AuthProvider";
 import { readUserLink } from "../../domain/storage";
-import { formatDuration, timeToMinutes, todayISO } from "../../domain/util";
+import {formatDuration, formatTimeRange, timeToMinutes, todayISO} from "../../domain/util";
 import { activeCycles, currentDayOfCycle, findPump } from "../selectors";
 import { cycleDayDate } from "../calc";
 import { formatDayDate, formatHours, formatLiters, formatMoneyYER, gregorianToday, hijriToday } from "../format";
 import { Button, Card, EmptyState, Pill, cx } from "../../components/ui";
+import { InstallAppCard } from "../../components/InstallApp";
 import {
   linkedPumpViews,
+  localPumpViews,
   nearestTurnAcross,
   type LinkedPumpView,
 } from "../pumpView";
-import { syncOfficialPumps } from "../officialSync";
+import { useOfficialSync } from "../useOfficialSync";
+import { SyncStatusBar } from "../SyncPanel";
 
 type Tab = "home" | "pumps" | "cycles" | "turns" | "official" | "accounts" | "settings";
 
@@ -43,33 +46,25 @@ export default function HomeScreen({ onGoTo }: Props) {
   const localPersonId = readUserLink();
 
   /**
-   * البيانات الرسمية تُقرأ من الخادم (PostgreSQL) لا من جهاز المسؤول،
-   * فيرى المستخدم ما سجّله المسؤول حتى من جهاز آخر.
+   * المزامنة الرسمية تُدار في مكان واحد (useOfficialSync): عند الفتح، والعودة
+   * للتطبيق، وكل دقيقة، وبعد عودة الشبكة. `sync.tick` يُنبّه أن بيانات جديدة وصلت.
    */
-  const [officialTick, setOfficialTick] = useState(0);
-  const approvedKey = memberships
-    .filter((m) => m.status === "approved")
-    .map((m) => m.pumpId)
-    .sort()
-    .join(",");
-  useEffect(() => {
-    if (!approvedKey) return;
-    let alive = true;
-    void syncOfficialPumps(memberships).then(() => {
-      if (alive) setOfficialTick((n) => n + 1);
-    });
-    return () => {
-      alive = false;
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [approvedKey]);
+  const sync = useOfficialSync();
 
-  /** بيانات المضخات المرتبطة — قراءة فقط من سجل المسؤول (العضوية المعتمدة من الخادم) */
+  /**
+   * بيانات المضخات المرتبطة — قراءة فقط من سجل المسؤول.
+   * مضخات العضوية المعتمدة من الخادم + مضخات محفوظة على هذا الجهاز (وضع محلي).
+   */
   const views = useMemo(() => {
-    return linkedPumpViews(memberships, localPersonId);
-    // officialTick: يُعاد بناء العرض بعد وصول البيانات الرسمية من الخادم
+    const linked = linkedPumpViews(memberships, localPersonId);
+    const locals = localPumpViews(
+      localPersonId,
+      linked.map((v) => v.pumpId)
+    );
+    return [...linked, ...locals];
+    // sync.tick: يُعاد بناء العرض بعد وصول البيانات الرسمية من الخادم
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [memberships, localPersonId, officialTick]);
+  }, [memberships, localPersonId, sync.tick]);
   const nearest = useMemo(() => nearestTurnAcross(views), [views]);
 
   const myRecords = state.turns
@@ -133,6 +128,10 @@ export default function HomeScreen({ onGoTo }: Props) {
         </div>
       </div>
 
+      {/* ------------------------ حالة المزامنة + التثبيت ------------------------ */}
+      {hasLinked ? <SyncStatusBar /> : null}
+      <InstallAppCard />
+
       {/* --------------------------- المضخات المرتبطة --------------------------- */}
       {hasLinked ? (
         <Section
@@ -157,9 +156,9 @@ export default function HomeScreen({ onGoTo }: Props) {
       >
         {hasLinked ? (
           nearest ? (
-            <Card className="overflow-hidden border-emerald-200 dark:border-emerald-800">
-              <div className="flex items-center gap-4 bg-gradient-to-l from-emerald-50 to-white p-4 dark:from-emerald-900/30 dark:to-slate-800">
-                <div className="flex h-16 w-16 shrink-0 flex-col items-center justify-center rounded-2xl bg-emerald-600 text-white shadow-lg shadow-emerald-600/30">
+            <Card className="overflow-hidden border-brand-200 dark:border-brand-800">
+              <div className="flex items-center gap-4 bg-gradient-to-l from-brand-50 to-white p-4 dark:from-brand-800/40 dark:to-slate-800">
+                <div className="flex h-16 w-16 shrink-0 flex-col items-center justify-center rounded-2xl bg-gradient-to-br from-brand-700 to-sky-600 text-white shadow-lg shadow-brand-900/30">
                   <span className="text-xl font-black leading-none">
                     {Number(nearest.turn.day.date.slice(8, 10))}
                   </span>
@@ -186,7 +185,7 @@ export default function HomeScreen({ onGoTo }: Props) {
                   </div>
                   <div className="mt-1.5 flex flex-wrap items-center gap-2 text-[11px] font-bold text-emerald-700 dark:text-emerald-300">
                     <span className="flex items-center gap-1">
-                      <Timer size={13} /> {nearest.turn.entry.startTime} → {nearest.turn.entry.endTime}
+                      <Timer size={13} /> {formatTimeRange(nearest.turn.entry.startTime, nearest.turn.entry.endTime)}
                     </span>
                     <span className="text-gray-400">
                       {formatDuration(
@@ -215,7 +214,7 @@ export default function HomeScreen({ onGoTo }: Props) {
         ) : cycling.nearest ? (
           <Card className="overflow-hidden border-emerald-200 dark:border-emerald-800">
             <div className="flex items-center gap-4 bg-gradient-to-l from-emerald-50 to-white p-4 dark:from-emerald-900/30 dark:to-slate-800">
-              <div className="flex h-16 w-16 shrink-0 flex-col items-center justify-center rounded-2xl bg-emerald-600 text-white shadow-lg shadow-emerald-600/30">
+              <div className="flex h-16 w-16 shrink-0 flex-col items-center justify-center rounded-2xl bg-gradient-to-br from-brand-700 to-sky-600 text-white shadow-lg shadow-brand-900/30">
                 <span className="text-xl font-black leading-none">{cycling.nearest.day}</span>
                 <span className="mt-0.5 text-[10px] font-bold">اليوم</span>
               </div>
@@ -281,7 +280,7 @@ export default function HomeScreen({ onGoTo }: Props) {
                 </div>
                 <div className="min-w-0 flex-1">
                   <div className="text-xs font-extrabold text-gray-800 dark:text-white">
-                    {r.date} · {r.startTime} → {r.endTime}
+                    {r.date} · {formatTimeRange(r.startTime, r.endTime)}
                   </div>
                   <div className="text-[11px] text-gray-400 dark:text-slate-400">
                     {formatHours(r.hours)} · {formatLiters(r.dieselLiters)} ·{" "}
@@ -432,10 +431,11 @@ function PumpCard({ view, onOpenOfficial }: { view: LinkedPumpView; onOpenOffici
             {view.pumpName}
           </div>
           <div className="flex items-center gap-2 text-[10px] text-gray-400 dark:text-slate-400">
-            <span className="font-mono font-bold text-emerald-600 dark:text-emerald-400">
+            <span className="font-mono font-bold text-sky-600 dark:text-sky-400">
               {view.pumpCode}
             </span>
             {view.managerName ? <span>· المسؤول: {view.managerName}</span> : null}
+            {view.localOnly ? <span>· على هذا الجهاز</span> : null}
           </div>
         </div>
         <Pill tone={view.roundStatus === "inside" ? "green" : view.roundStatus === "after" ? "gray" : "amber"}>
@@ -460,7 +460,7 @@ function PumpCard({ view, onOpenOfficial }: { view: LinkedPumpView; onOpenOffici
             <div>
               <div className="mb-1 flex items-center justify-between text-[10px] font-bold text-gray-500 dark:text-slate-300">
                 <span>
-                  ديالة {view.round?.number} · {view.round?.startDate} → {view.round?.endDate}
+                  ديالة {view.round?.number} · {view.round?.endDate} ← {view.round?.startDate}
                 </span>
                 <span className="text-emerald-700 dark:text-emerald-300">
                   {view.dayNumber}/{view.totalDays}
@@ -474,10 +474,10 @@ function PumpCard({ view, onOpenOfficial }: { view: LinkedPumpView; onOpenOffici
 
           {/* دوري اليوم */}
           {view.todayTurn ? (
-            <div className="flex items-center gap-2 rounded-2xl bg-emerald-600 px-3 py-2.5 text-white">
+            <div className="flex items-center gap-2 rounded-2xl bg-gradient-to-l from-brand-700 to-sky-600 px-3 py-2.5 text-white">
               <Timer size={16} />
               <div className="flex-1 text-[11px] font-bold">
-                دوري اليوم: {view.todayTurn.entry.startTime} → {view.todayTurn.entry.endTime}
+                دوري اليوم: {formatTimeRange(view.todayTurn.entry.startTime, view.todayTurn.entry.endTime)}
               </div>
               <span className="rounded-full bg-white/20 px-2 py-0.5 text-[10px] font-bold">
                 {view.todayTurn.entry.status === "done"
@@ -513,7 +513,7 @@ function PumpCard({ view, onOpenOfficial }: { view: LinkedPumpView; onOpenOffici
             {view.myBase ? (
               <>
                 <div className="flex flex-wrap items-center gap-2 text-[11px] font-extrabold text-gray-800 dark:text-slate-100">
-                  <Users size={13} className="text-emerald-600" />
+                  <Users size={13} className="text-sky-600 dark:text-sky-300" />
                   نصيبي في الدوام الأساسي: {formatDuration(view.myBase.shareMin)}
                   <span className="text-gray-400">
                     · ترتيبي {view.myBase.order + 1} من {view.baseRows.length}
@@ -521,7 +521,7 @@ function PumpCard({ view, onOpenOfficial }: { view: LinkedPumpView; onOpenOffici
                 </div>
                 <div className="mt-1 flex flex-wrap items-center gap-2 text-[10px] text-gray-500 dark:text-slate-300">
                   <span className="font-bold">
-                    {view.myBase.startTime} → {view.myBase.endTime}
+                    {formatTimeRange(view.myBase.startTime, view.myBase.endTime)}
                   </span>
                   <span>· قبلي {view.baseBeforeMe}</span>
                   {view.rosterLocked ? (
@@ -556,8 +556,7 @@ function PumpCard({ view, onOpenOfficial }: { view: LinkedPumpView; onOpenOffici
           {/* آخر دور مضى + التفاصيل */}
           {view.lastTurn ? (
             <div className="text-[10px] text-gray-400 dark:text-slate-400">
-              آخر دور مضى: {view.lastTurn.day.date} · {view.lastTurn.entry.startTime} →{" "}
-              {view.lastTurn.entry.endTime}
+              آخر دور مضى: {view.lastTurn.day.date} · {formatTimeRange(view.lastTurn.entry.startTime, view.lastTurn.entry.endTime)}
             </div>
           ) : null}
 

@@ -56,6 +56,14 @@ export async function auditForPump(pumpId, limit = 200) {
   return res.rows.map(auditRow);
 }
 
+export async function auditForUser(userId, limit = 200) {
+  const res = await q(
+    `SELECT * FROM audit_logs WHERE actor_id = $1 ORDER BY at DESC LIMIT $2`,
+    [userId, limit]
+  );
+  return res.rows.map(auditRow);
+}
+
 export function auditRow(row) {
   return {
     id: row.id,

@@ -10,26 +10,11 @@ if (!process.env.DATABASE_URL) {
   console.error("[db] DATABASE_URL غير موجود في بيئة التشغيل");
 }
 
-/* SSL لقاعدة البيانات المُستضافة:
- * الافتراضي هو ما في DATABASE_URL نفسه (sslmode) — بلا تغيير لأي سلوك قائم.
- * ويمكن ضبطه صريحًا عبر DATABASE_SSL: "require" لخادم بشهادة يديرها المزوّد،
- * "verify-full" للتحقق الكامل، "disable" للاتصال المحلي بلا SSL. */
-const sslMode = String(process.env.DATABASE_SSL || "").trim().toLowerCase();
-const ssl =
-  sslMode === "disable" || sslMode === "off" || sslMode === "false"
-    ? false
-    : sslMode === "verify-full" || sslMode === "verify"
-      ? { rejectUnauthorized: true }
-      : sslMode
-        ? { rejectUnauthorized: false }
-        : undefined;
-
 export const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
   max: 5,
   idleTimeoutMillis: 10_000,
   connectionTimeoutMillis: 15_000,
-  ...(ssl === undefined ? {} : { ssl }),
 });
 
 // قاعدة البيانات قد تكون نائمة (تُوقَظ عند أول طلب) — لا نُسقط العملية بسبب خطأ اتصال
@@ -54,21 +39,47 @@ function isConnectionError(err) {
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-/** استعلام واحد مع إعادة محاولة واحدة عند انقطاع الاتصال (قاعدة نائمة) */
+/**
+ * إعادة المحاولة عند انقطاع الاتصال (القاعدة تنام عند الخمول وتستيقظ عند أول طلب).
+ * المحاولات تتصاعد: 0.4s ثم 1.2s — تكفي لاستيقاظ القاعدة بدل أن يرى المستخدم خطأ.
+ */
+const RETRY_DELAYS = [400, 1200];
+
+/** استعلام واحد (قراءة أو كتابة واحدة) مع إعادات محاولة آمنة */
 export async function q(text, params = []) {
-  try {
-    return await pool.query(text, params);
-  } catch (err) {
-    if (!isConnectionError(err)) throw err;
-    await sleep(400);
-    return pool.query(text, params);
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return await pool.query(text, params);
+    } catch (err) {
+      if (!isConnectionError(err) || attempt >= RETRY_DELAYS.length) throw err;
+      await sleep(RETRY_DELAYS[attempt]);
+    }
   }
 }
 
 export async function withTransaction(fn) {
-  const client = await pool.connect();
+  /*
+   * نحاول فتح الاتصال و«BEGIN» قبل أي كتابة: إن فشل أحدهما فالكتابة لم تبدأ،
+   * فإعادة المحاولة آمنة تمامًا ولا تُكرّر أي أثر. بعد نجاح BEGIN لا نعيد المحاولة.
+   */
+  let client = null;
+  let started = false;
+  for (let attempt = 0; !started; attempt++) {
+    try {
+      if (!client) client = await pool.connect();
+      await client.query("BEGIN");
+      started = true;
+    } catch (err) {
+      if (client) {
+        try { client.release(); } catch { /* ignore */ }
+        client = null;
+      }
+      if (!isConnectionError(err) || attempt >= RETRY_DELAYS.length) throw err;
+      await sleep(RETRY_DELAYS[attempt]);
+    }
+  }
+
   try {
-    await client.query("BEGIN");
     const out = await fn(async (text, params = []) => client.query(text, params));
     await client.query("COMMIT");
     return out;
@@ -375,9 +386,6 @@ CREATE TABLE IF NOT EXISTS day_entries (
   deleted_by uuid,
   deletion_reason text NOT NULL DEFAULT ''
 );
-/* سبب نقص نصيب المشارك في دوام اليوم عن أساسه في الكشف */
-ALTER TABLE day_entries ADD COLUMN IF NOT EXISTS shortfall_reason text NOT NULL DEFAULT '';
-ALTER TABLE day_entries ADD COLUMN IF NOT EXISTS shortfall_note text NOT NULL DEFAULT '';
 CREATE INDEX IF NOT EXISTS day_entries_day_idx ON day_entries(day_id);
 
 /* الاستخدام الفعلي — يحمل snapshot للقيم المطبَّقة وقت العملية */
@@ -407,13 +415,18 @@ CREATE TABLE IF NOT EXISTS actual_usages (
   deletion_reason text NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS actual_usages_pump_idx ON actual_usages(pump_id);
-/* حقول التسديد التفصيلية: المدفوع من الديزل، والرواسة جزءًا نقدًا وجزءًا أجلًا، وسبب نقص النصيب */
+
+/*
+ * ترحيل غير مُتلِف (المرحلة الثانية): حقول التسديد المفصّلة.
+ * تُضاف بأعمدة وقيَم افتراضية، فلا تتأثّر أي بيانات قديمة، وتبقى payload كما هي.
+ */
 ALTER TABLE actual_usages ADD COLUMN IF NOT EXISTS diesel_paid_amount numeric NOT NULL DEFAULT 0;
-ALTER TABLE actual_usages ADD COLUMN IF NOT EXISTS royalty_pay_mode text NOT NULL DEFAULT 'credit';
 ALTER TABLE actual_usages ADD COLUMN IF NOT EXISTS royalty_cash_amount numeric NOT NULL DEFAULT 0;
 ALTER TABLE actual_usages ADD COLUMN IF NOT EXISTS royalty_deferred_amount numeric NOT NULL DEFAULT 0;
 ALTER TABLE actual_usages ADD COLUMN IF NOT EXISTS shortfall_reason text NOT NULL DEFAULT '';
 ALTER TABLE actual_usages ADD COLUMN IF NOT EXISTS shortfall_note text NOT NULL DEFAULT '';
+ALTER TABLE day_entries ADD COLUMN IF NOT EXISTS shortfall_reason text NOT NULL DEFAULT '';
+ALTER TABLE day_entries ADD COLUMN IF NOT EXISTS shortfall_note text NOT NULL DEFAULT '';
 
 /* التوقفات (عطل، مطر، وقود، طارئ …) */
 CREATE TABLE IF NOT EXISTS pump_stops (
@@ -538,6 +551,96 @@ CREATE TABLE IF NOT EXISTS pump_sync (
   extra jsonb NOT NULL DEFAULT '{}'::jsonb,
   updated_at timestamptz NOT NULL DEFAULT now()
 );
+
+/*
+ * تمييز إشعارات المسؤول كمقروءة — لكل مستخدم على حدة.
+ * «جديد» علم شخصي: ما قرأه مساهم لا يصير مقروءًا عند غيره، ولا يُعدَّل سجل المسؤول.
+ */
+CREATE TABLE IF NOT EXISTS notification_reads (
+  pump_id uuid NOT NULL REFERENCES pumps(id) ON DELETE CASCADE,
+  user_id uuid NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  notification_id text NOT NULL,
+  read_at timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (pump_id, user_id, notification_id)
+);
+CREATE INDEX IF NOT EXISTS notification_reads_user_idx ON notification_reads(user_id);
+
+/*
+ * اشتراكات الإشعارات الفورية (Web Push) — لكل مستخدم ولكل مضخة على حدة.
+ * تُرسَل لحظة حفظ المسؤول لتعديل (داخل الطلب الوارد نفسه، فلا حاجة لمهام مجدولة).
+ */
+CREATE TABLE IF NOT EXISTS push_subscriptions (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  pump_id uuid NOT NULL REFERENCES pumps(id) ON DELETE CASCADE,
+  user_id uuid NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  endpoint text NOT NULL UNIQUE,
+  p256dh text NOT NULL,
+  auth text NOT NULL,
+  failures integer NOT NULL DEFAULT 0,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS push_subscriptions_pump_idx ON push_subscriptions(pump_id);
+CREATE INDEX IF NOT EXISTS push_subscriptions_user_idx ON push_subscriptions(user_id);
+
+/* آخر مرة أُرسل فيها إشعار «تحديث عام» لهذه المضخة (لتقليل الإزعاج) */
+ALTER TABLE pump_sync ADD COLUMN IF NOT EXISTS last_notified_at timestamptz;
+
+/*
+ * --------------------- تحقّق الرقم عبر تيليجرام (مجاني بالكامل) ---------------------
+ * لا رسوم ولا مزوّد مدفوع: البوت الرسمي في تيليجرام يرسل رمزًا مُشفَّرًا،
+ * وزر «شارك رقمي» يُثبت أن الرقم يملكه المستخدم فعلًا.
+ */
+
+/* طلبات الربط: رمز مؤقت يُرسل للبوت، ثم رقم مُشارَك من تيليجرام نفسه */
+CREATE TABLE IF NOT EXISTS telegram_links (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id uuid NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  link_code_hash text NOT NULL,
+  chat_id text,
+  username text NOT NULL DEFAULT '',
+  shared_phone text NOT NULL DEFAULT '',
+  status text NOT NULL DEFAULT 'pending',
+  attempts integer NOT NULL DEFAULT 0,
+  expires_at timestamptz NOT NULL,
+  linked_at timestamptz,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS telegram_links_user_idx ON telegram_links(user_id, created_at DESC);
+
+/* رموز التحقّق: تُخزَّن مُشفَّرة (hash) ولا تُقرأ من القاعدة، وتُستهلك مرة واحدة */
+CREATE TABLE IF NOT EXISTS otp_codes (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id uuid NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  phone text NOT NULL DEFAULT '',
+  purpose text NOT NULL DEFAULT 'reset',
+  channel text NOT NULL DEFAULT 'telegram',
+  code_hash text NOT NULL,
+  ticket_hash text,
+  attempts integer NOT NULL DEFAULT 0,
+  status text NOT NULL DEFAULT 'sent',
+  provider_message_id text NOT NULL DEFAULT '',
+  delivery_status text NOT NULL DEFAULT '',
+  ip text NOT NULL DEFAULT '',
+  expires_at timestamptz NOT NULL,
+  ticket_expires_at timestamptz,
+  verified_at timestamptz,
+  used_at timestamptz,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS otp_codes_user_idx ON otp_codes(user_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS otp_codes_created_idx ON otp_codes(created_at DESC);
+CREATE INDEX IF NOT EXISTS otp_codes_status_idx ON otp_codes(status);
+
+/* حالة التحقّق على الحساب نفسه */
+ALTER TABLE users ADD COLUMN IF NOT EXISTS phone_verified_at timestamptz;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS telegram_chat_id text;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS telegram_username text NOT NULL DEFAULT '';
+ALTER TABLE users ADD COLUMN IF NOT EXISTS telegram_linked_at timestamptz;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS telegram_alerts boolean NOT NULL DEFAULT true;
+CREATE UNIQUE INDEX IF NOT EXISTS users_telegram_chat_idx
+  ON users(telegram_chat_id) WHERE telegram_chat_id IS NOT NULL;
 
 `;
 

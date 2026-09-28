@@ -5,11 +5,8 @@ import {
   Globe,
   Info,
   LogOut,
-  Moon,
-  Palette,
   Save,
   ShieldCheck,
-  Sun,
   UserRound,
   History,
 } from "lucide-react";
@@ -26,7 +23,11 @@ import {
   TextInput,
 } from "../../components/ui";
 import { formatDateTime } from "../../format";
-import ShareAppButton from "../../components/ShareAppButton";
+import { InstallAppCard } from "../../components/InstallApp";
+import { AppearanceCard } from "../../components/AppearanceCard";
+import { SyncSettingsCard } from "../SyncPanel";
+import PushCard from "../PushCard";
+import TelegramVerifyCard from "../../components/TelegramVerify";
 
 export default function SettingsScreen({ onLogout }: { onLogout: () => void }) {
   const { state, actions } = useShareholder();
@@ -49,6 +50,12 @@ export default function SettingsScreen({ onLogout }: { onLogout: () => void }) {
           {t("الإعدادات", "Settings")}
         </h1>
       </div>
+
+      {/* المزامنة مع المسؤول + التطبيق على الجوال + الإشعارات */}
+      <SyncSettingsCard />
+      <InstallAppCard />
+      <PushCard />
+      <TelegramVerifyCard />
 
       {/* الملف الشخصي */}
       <Card className="p-5">
@@ -100,28 +107,8 @@ export default function SettingsScreen({ onLogout }: { onLogout: () => void }) {
         </div>
       </Card>
 
-      {/* الثيم */}
-      <Card className="p-5">
-        <SectionTitle
-          icon={<Palette size={18} />}
-          title={t("الثيم", "Theme")}
-          subtitle={t("مظهر التطبيق", "App appearance")}
-        />
-        <div className="mt-4 grid grid-cols-2 gap-3">
-          <ThemeButton
-            active={state.settings.theme === "light"}
-            onClick={() => actions.setTheme("light")}
-            icon={<Sun size={20} />}
-            title={t("فاتح", "Light")}
-          />
-          <ThemeButton
-            active={state.settings.theme === "dark"}
-            onClick={() => actions.setTheme("dark")}
-            icon={<Moon size={20} />}
-            title={t("داكن", "Dark")}
-          />
-        </div>
-      </Card>
+      {/* المظهر والكتابة: الوضع · قوة الكتابة · لون التمييز · حجم الخط */}
+      <AppearanceCard value={state.settings} onChange={actions.setAppearance} t={t} />
 
       {/* اللغة */}
       <Card className="p-5">
@@ -167,7 +154,17 @@ export default function SettingsScreen({ onLogout }: { onLogout: () => void }) {
             )}
           </p>
           <p className="font-bold text-gray-800 dark:text-white">
-            {t("برمجة وتطوير: المهندس/ عبدالملك عامر", "Developed by: Engineer Abdulmalik Amer")}
+            {t("برمجة وتطوير: ", "Developed by: ")}
+            <a
+              href="https://www.linkedin.com/in/abdulmalek-saleh-amer-70057226b"
+              target="_blank"
+              rel="noopener noreferrer"
+              aria-label={t("صفحة المطوّر على LinkedIn", "Developer profile on LinkedIn")}
+              data-testid="developer-linkedin"
+              className="text-sky-700 underline decoration-sky-600/40 underline-offset-2 transition hover:text-sky-800 dark:text-sky-300"
+            >
+              {t("المهندس/ عبدالملك عامر", "Engineer Abdulmalik Amer")}
+            </a>
           </p>
         </div>
       </Card>
@@ -178,12 +175,12 @@ export default function SettingsScreen({ onLogout }: { onLogout: () => void }) {
           title={t("الشروط وسياسة الخصوصية", "Terms & Privacy")}
         />
         <div className="mt-3 flex items-start gap-3 rounded-2xl bg-gray-50 p-4 text-sm leading-relaxed text-gray-600 dark:bg-slate-700/50 dark:text-slate-300">
-          <FileText size={18} className="mt-0.5 shrink-0 text-emerald-600" />
+          <FileText size={18} className="mt-0.5 shrink-0 text-sky-600 dark:text-sky-300" />
           <div className="space-y-2">
             <p>
               {t(
-                "بياناتك محفوظة محليًا على جهازك فقط، ولا تُرسل إلى أي خادم خارجي، ولا نشاركها مع أي طرف ثالث.",
-                "Your data is stored locally on your device only, is not sent to any external server, and is never shared with third parties."
+                "بيانات المضخات المرتبطة بحسابك محفوظة على الخادم الرسمي للمشروع (قاعدة بياناته) حتى يراك ما يسجّله المسؤول من أي جهاز — وأنت لا تعدّل شيئًا من سجله. سجلك الشخصي وملفك يبقيان على جهازك، ولا تُشارك بياناتك مع أي طرف ثالث.",
+                "Data for the pumps linked to your account is stored on the project's official server so you see what the manager records from any device — you cannot change their records. Your personal ledger stays on your device, and your data is never shared with third parties."
               )}
             </p>
             <p>
@@ -271,9 +268,6 @@ export default function SettingsScreen({ onLogout }: { onLogout: () => void }) {
           )}
         </p>
       </Card>
-
-      {/* زر صغير أسفل الشاشة: مشاركة رابط التطبيق */}
-      <ShareAppButton t={t} className="pb-2 pt-1" />
     </div>
   );
 }
@@ -299,42 +293,6 @@ function SectionTitle({
         ) : null}
       </div>
     </div>
-  );
-}
-
-function ThemeButton({
-  active,
-  onClick,
-  icon,
-  title,
-}: {
-  active: boolean;
-  onClick: () => void;
-  icon: React.ReactNode;
-  title: string;
-}) {
-  return (
-    <button
-      onClick={onClick}
-      className={cx(
-        "flex flex-col items-center gap-2 rounded-2xl border-2 p-4 transition",
-        active
-          ? "border-emerald-500 bg-emerald-50 dark:border-emerald-500 dark:bg-emerald-900/30"
-          : "border-gray-200 bg-white hover:border-emerald-200 dark:border-slate-600 dark:bg-slate-800"
-      )}
-    >
-      <span
-        className={cx(
-          "flex h-10 w-10 items-center justify-center rounded-xl",
-          active ? "bg-emerald-500 text-white" : "bg-gray-100 text-gray-500 dark:bg-slate-700 dark:text-slate-300"
-        )}
-      >
-        {icon}
-      </span>
-      <span className={cx("text-sm font-bold", active ? "text-emerald-700 dark:text-emerald-300" : "text-gray-600 dark:text-slate-300")}>
-        {title}
-      </span>
-    </button>
   );
 }
 

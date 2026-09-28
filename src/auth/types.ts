@@ -34,9 +34,21 @@ export interface RegistrationFlags {
   user: boolean;
 }
 
+export interface VerificationSettings {
+  /** إرسال رمز الاستعادة على تيليجرام للحسابات المربوطة */
+  otpOnTelegram: boolean;
+  /** منع استعادة كلمة المرور إلا لحساب مُتحقَّق (تشديد اختياري) */
+  requireVerified: boolean;
+  /** شريط تنبيه داخل التطبيق لمن لم يُتحقّق من رقمه */
+  promptUnverified: boolean;
+  /** سقف يومي لعدد الرموز (0 = بلا سقف) */
+  dailyLimit: number;
+}
+
 export interface SystemSettings {
   announcement: Announcement;
   registration: RegistrationFlags;
+  verification: VerificationSettings;
 }
 
 /* ------------------------- لوحة مسؤول النظام ------------------------- */
@@ -175,7 +187,14 @@ export interface Membership {
 }
 
 export interface MemberRow extends Membership {
-  user: { id: string; name: string; phoneMasked: string; accountType?: AccountType };
+  user: {
+    id: string;
+    name: string;
+    phoneMasked: string;
+    accountType?: AccountType;
+    /** الرقم مُتحقَّق منه عبر تيليجرام (زر «شارك رقمي») */
+    phoneVerified?: boolean;
+  };
 }
 
 export interface AuditRow {
@@ -228,6 +247,13 @@ export const ACTION_LABEL: Record<string, string> = {
   "password.change": "تغيير كلمة المرور",
   "password.reset_request": "طلب استعادة كلمة المرور",
   "password.reset_request_failed": "طلب استعادة غير مطابق",
+  "password.reset_blocked_unverified": "استعادة مرفوضة (حساب غير مُتحقَّق)",
+  "password.otp_verified": "تحقّق ناجح من رمز الاستعادة",
+  "telegram.link_request": "طلب ربط تيليجرام",
+  "telegram.unlink": "إلغاء ربط تيليجرام",
+  "telegram.verified": "تحقّق الرقم عبر تيليجرام",
+  "telegram.verify_mismatch": "رقم مختلف عند التحقّق",
+  "telegram.webhook_setup": "تثبيت اتصال تيليجرام",
   "password.reset": "استعادة كلمة المرور",
   "password.reset_failed": "رمز استعادة خاطئ",
   "pump.create": "إنشاء مضخة",
